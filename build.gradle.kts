@@ -54,58 +54,39 @@ tasks.withType<JavaCompile> {
     options.encoding = "UTF-8"
 }
 
+// ---------------------------------------------------------------- Screen Speaker
+// ./gradlew run   -> Screen Speaker from sources
+// ./gradlew build -> build/libs/screen-speaker.jar
 application {
-    mainClass.set("SpeechEditor")
+    mainClass.set("ScreenSpeaker")
     applicationDefaultJvmArgs = listOf("-Dapple.laf.useScreenMenuBar=true")
 }
 
 tasks.jar {
-    archiveFileName.set("speech-editor.jar")
-    manifest { attributes("Main-Class" to "SpeechEditor") }
-}
-
-// ---------------------------------------------------------------- Screen Speaker (second app)
-val screenSpeakerJar by tasks.registering(Jar::class) {
-    group = "build"
-    description = "Assembles screen-speaker.jar (same classes, Screen Speaker as the entry point)."
     archiveFileName.set("screen-speaker.jar")
-    from(sourceSets.main.get().output)
     manifest { attributes("Main-Class" to "ScreenSpeaker") }
 }
-tasks.assemble { dependsOn(screenSpeakerJar) }
 
-tasks.register<JavaExec>("runScreen") {
-    group = "application"
-    description = "Runs Screen Speaker from sources."
-    classpath = sourceSets.main.get().runtimeClasspath
-    mainClass.set("ScreenSpeaker")
-    jvmArgs("-Dapple.laf.useScreenMenuBar=true")
-}
-
-// ---------------------------------------------------------------- macOS .app bundles
-// ./gradlew appImage       -> build/app/Speech Editor.app
-// ./gradlew appImageScreen -> build/app/Screen Speaker.app
-fun registerAppImage(taskName: String, appName: String, jarTask: TaskProvider<Jar>, mainClass: String) =
-    tasks.register<Exec>(taskName) {
-        group = "distribution"
-        description = "Builds build/app/$appName.app with jpackage (bundles its own runtime)."
-        dependsOn(jarTask)
-        val input = layout.buildDirectory.dir("jpackage-input/$taskName")
-        val dest = layout.buildDirectory.dir("app")
-        doFirst {
-            delete(input, dest.get().dir("$appName.app"))
-            copy { from(jarTask); into(input) }
-        }
-        val javaHome = javaToolchains.launcherFor(java.toolchain).get().metadata.installationPath
-        executable = javaHome.file("bin/jpackage").asFile.absolutePath
-        args(
-            "--type", "app-image", "--name", appName,
-            "--dest", dest.get().asFile.absolutePath,
-            "--input", input.get().asFile.absolutePath,
-            "--main-jar", jarTask.get().archiveFileName.get(), "--main-class", mainClass,
-            "--java-options", "-Dapple.laf.useScreenMenuBar=true",
-        )
+// ---------------------------------------------------------------- macOS .app bundle
+// ./gradlew appImage -> build/app/Screen Speaker.app (bundles its own Java runtime)
+val appName = "Screen Speaker"
+tasks.register<Exec>("appImage") {
+    group = "distribution"
+    description = "Builds build/app/$appName.app with jpackage (bundles its own runtime)."
+    dependsOn(tasks.jar)
+    val input = layout.buildDirectory.dir("jpackage-input")
+    val dest = layout.buildDirectory.dir("app")
+    doFirst {
+        delete(input, dest.get().dir("$appName.app"))
+        copy { from(tasks.jar); into(input) }
     }
-
-registerAppImage("appImage", "Speech Editor", tasks.jar, "SpeechEditor")
-registerAppImage("appImageScreen", "Screen Speaker", screenSpeakerJar, "ScreenSpeaker")
+    val javaHome = javaToolchains.launcherFor(java.toolchain).get().metadata.installationPath
+    executable = javaHome.file("bin/jpackage").asFile.absolutePath
+    args(
+        "--type", "app-image", "--name", appName,
+        "--dest", dest.get().asFile.absolutePath,
+        "--input", input.get().asFile.absolutePath,
+        "--main-jar", tasks.jar.get().archiveFileName.get(), "--main-class", "ScreenSpeaker",
+        "--java-options", "-Dapple.laf.useScreenMenuBar=true",
+    )
+}

@@ -8,28 +8,31 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Reads text off the screen. Read Screen hides this window, lets the user drag over any part of the
- * screen with the macOS crosshair (Space switches to picking a whole window), recognizes the text
- * in the screenshot with Apple's Vision framework, shows it in the text pane and speaks it with
- * {@link OllamaSpeech}. Speak re-reads the pane (or the selection in it) without a new screenshot.
+ * Collects text off the screen and reads it on request. Copy Screen hides this window, lets the
+ * user drag over any part of the screen with the macOS crosshair (Space switches to picking a whole
+ * window), recognizes the text in the screenshot with Apple's Vision framework and adds it to the
+ * end of the text pane as a new paragraph. Nothing is spoken until the user presses Speak, which
+ * reads the pane (or the selection in it) with {@link OllamaSpeech}. Several captures can be
+ * collected and then read in one go.
  *
  * macOS only: needs {@code screencapture} and the bundled Vision helper. Run with
- * {@code ./gradlew runScreen} or {@code java -jar build/libs/screen-speaker.jar}.
+ * {@code ./gradlew run} or {@code java -jar build/libs/screen-speaker.jar}.
  */
 public class ScreenSpeaker extends JFrame {
 
-    private static final String HINT = "Press Read Screen, then drag over the text you want to hear.";
+    private static final String HINT = "Press Copy Screen and drag over some text, then press Speak to hear it.";
 
     private final JTextArea text = new JTextArea();
     private final JLabel status = new JLabel(HINT);
     private final JComboBox<String> voice = new JComboBox<>(OllamaSpeech.DEFAULT_VOICES);
-    private final JButton readScreenButton = new JButton("Read Screen");
+    private final JButton copyScreenButton = new JButton("Copy Screen");
     private final JButton speakButton = new JButton("Speak");
     private final JButton stopButton = new JButton("Stop");
     private final OllamaSpeech speech = new OllamaSpeech(this, this::setStatus);
 
     private volatile SpeechPipeline pipeline;
     private volatile boolean capturing;
+    private volatile boolean speaking;
 
     public static void main(String[] args) {
         System.setProperty("apple.laf.useScreenMenuBar", "true");
@@ -65,7 +68,7 @@ public class ScreenSpeaker extends JFrame {
         status.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
         add(status, BorderLayout.SOUTH);
 
-        stopButton.setEnabled(false);
+        updateButtons();
         setSize(520, 380);
         placeBottomRight();
     }
@@ -99,7 +102,7 @@ public class ScreenSpeaker extends JFrame {
         bar.add(edit);
 
         JMenu speechMenu = new JMenu("Speech");
-        speechMenu.add(item("Read Screen", KeyEvent.VK_R, menuMask, e -> readScreen()));
+        speechMenu.add(item("Copy Screen", KeyEvent.VK_R, menuMask, e -> copyScreen()));
         speechMenu.add(item("Speak Text", KeyEvent.VK_R, menuMask | KeyEvent.SHIFT_DOWN_MASK, e -> speak()));
         speechMenu.add(item("Stop", KeyEvent.VK_PERIOD, menuMask, e -> stopSpeech()));
         bar.add(speechMenu);
@@ -114,10 +117,10 @@ public class ScreenSpeaker extends JFrame {
         voice.setMaximumSize(new Dimension(200, 30));
         tb.add(voice);
         tb.addSeparator();
-        readScreenButton.setToolTipText("Take a screenshot of a region or window and read the text in it");
-        readScreenButton.addActionListener(e -> readScreen());
-        tb.add(readScreenButton);
-        speakButton.setToolTipText("Read the text below (or the selected part of it) again");
+        copyScreenButton.setToolTipText("Take a screenshot of a region or window and add its text to the end of the pane");
+        copyScreenButton.addActionListener(e -> copyScreen());
+        tb.add(copyScreenButton);
+        speakButton.setToolTipText("Read the text below (or the selected part of it)");
         speakButton.addActionListener(e -> speak());
         tb.add(speakButton);
         stopButton.addActionListener(e -> stopSpeech());
@@ -146,21 +149,29 @@ public class ScreenSpeaker extends JFrame {
         SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this, msg, "Error", JOptionPane.ERROR_MESSAGE));
     }
 
+    /** Copy Screen is available between captures; Speak only while nothing is playing; Stop only while it is. */
+    private void updateButtons() {
+        SwingUtilities.invokeLater(() -> {
+            copyScreenButton.setEnabled(!capturing);
+            speakButton.setEnabled(!capturing && !speaking);
+            stopButton.setEnabled(speaking);
+        });
+    }
+
     private void quit() {
         stopSpeech();
         dispose();
         System.exit(0);
     }
 
-    // ---------------------------------------------------------------- read screen
+    // ---------------------------------------------------------------- copy screen
 
-    private void readScreen() {
+    /** Screenshots a region, recognizes its text and appends it to the pane. Playback keeps going. */
+    private void copyScreen() {
         if (capturing) return;
-        stopSpeech();
         capturing = true;
-        readScreenButton.setEnabled(false);
-        speakButton.setEnabled(false);
-        setStatus("Drag over the text to read. Space picks a whole window, Esc cancels.");
+        updateButtons();
+        setStatus("Drag over the text to copy. Space picks a whole window, Esc cancels.");
         setVisible(false); // get out of the way of the screenshot
 
         new SwingWorker<String, Void>() {
@@ -180,8 +191,7 @@ public class ScreenSpeaker extends JFrame {
                 capturing = false;
                 setVisible(true);
                 toFront();
-                readScreenButton.setEnabled(true);
-                speakButton.setEnabled(true);
+                updateButtons();
                 try {
                     String recognized = get();
                     if (recognized == null) {
@@ -194,16 +204,26 @@ public class ScreenSpeaker extends JFrame {
                                 + "this app in System Settings > Privacy & Security.");
                         return;
                     }
-                    text.setText(cleaned);
-                    text.setCaretPosition(0);
-                    speakText(cleaned);
+                    String merged = appendParagraph(text.getText(), cleaned);
+                    text.setText(merged);
+                    text.setCaretPosition(merged.length());
+                    setStatus("Copied " + cleaned.length() + " characters from the screen. Press Speak to hear the text.");
                 } catch (Exception ex) {
                     Throwable c = ex.getCause() != null ? ex.getCause() : ex;
-                    setStatus("Read Screen failed: " + c.getMessage());
-                    error("Read Screen failed:\n" + c.getMessage());
+                    setStatus("Copy Screen failed: " + c.getMessage());
+                    error("Copy Screen failed:\n" + c.getMessage());
                 }
             }
         }.execute();
+    }
+
+    /**
+     * The pane's text with {@code addition} added as a new paragraph at the end: a blank line
+     * separates it from what is already there, and an empty pane becomes just the addition.
+     */
+    static String appendParagraph(String existing, String addition) {
+        String kept = existing.stripTrailing();
+        return kept.isEmpty() ? addition : kept + "\n\n" + addition;
     }
 
     // ---------------------------------------------------------------- speech
@@ -216,13 +236,13 @@ public class ScreenSpeaker extends JFrame {
     private void speakText(String toRead) {
         List<String> chunks = TextChunker.chunks(toRead, OllamaSpeech.CHUNK_CHARS);
         if (chunks.isEmpty()) {
-            setStatus("Nothing to read");
+            setStatus("Nothing to read. Press Copy Screen to grab some text first.");
             return;
         }
         stopSpeech();
         String voiceName = String.valueOf(voice.getEditor().getItem()).strip();
-        speakButton.setEnabled(false);
-        stopButton.setEnabled(true);
+        speaking = true;
+        updateButtons();
         setStatus("Generating speech with ollama " + OllamaSpeech.MODEL + " (" + toRead.strip().length()
                 + " chars in " + chunks.size() + " parts)...");
 
@@ -257,9 +277,7 @@ public class ScreenSpeaker extends JFrame {
     }
 
     private void resetButtons() {
-        SwingUtilities.invokeLater(() -> {
-            if (!capturing) speakButton.setEnabled(true);
-            stopButton.setEnabled(false);
-        });
+        speaking = false;
+        updateButtons();
     }
 }

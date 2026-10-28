@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
- * Text to speech through {@code ollama run phonon}. Shared by Speech Editor and Screen Speaker.
+ * Text to speech through {@code ollama run phonon} for Screen Speaker.
  *
  * {@code ollama run phonon --voice <v> "<text>"} writes a 16-bit mono 24 kHz WAV to stdout when
  * stdout is not a terminal; {@link #synthesize} captures those bytes and {@link #play} plays them
