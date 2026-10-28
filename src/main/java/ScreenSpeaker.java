@@ -129,7 +129,7 @@ public class ScreenSpeaker extends JFrame {
         tb.setFloatable(false);
         tb.add(new JLabel(" Voice: "));
         voice.setEditable(true);
-        voice.setMaximumSize(new Dimension(200, 30));
+        voice.setMaximumSize(new Dimension(240, 30));
         tb.add(voice);
         tb.add(new JLabel(" Speed: "));
         speed.setSelectedItem("1x");

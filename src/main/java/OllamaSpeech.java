@@ -38,9 +38,14 @@ final class OllamaSpeech implements SpeechPipeline.Player {
 
     static final String MODEL = System.getProperty("speech.model", "phonon");
     static final String INSTALL_CMD = "curl -fsSL https://ollama.com/install.sh | sh";
+    /** Every voice {@code ollama show phonon} lists (as of October 2026), "default" first. */
     static final String[] DEFAULT_VOICES = {
-            "default", "Alfie", "Bryony", "Delia", "Easton", "Edwin", "Elodie-Rose", "Everly",
-            "Freya", "Hadley", "Harper", "Hugh", "Imogen"
+            "default", "Alfie", "Azgorath", "Bryony", "Captain Silas Blackwater", "Delia", "Easton", "Edwin",
+            "Elodie-Rose", "Everly", "Fairy Godmother", "Fennick the Young Elf", "Freya", "Grub the Ogre",
+            "Hadley", "Harper", "Hugh", "Imogen", "Juniper", "Lottie", "Maeve", "Master Aldric", "Micah",
+            "Miles", "Morwenna of the Deep", "Old Mortlake", "Pippa", "Preston", "Russell", "Sir Bramwell",
+            "Spencer", "Teddy", "The Snow Queen", "The Thing Under the Stairs", "Toby", "Trevor",
+            "Vyrmathrax the Ancient", "Zoey"
     };
     /** Characters per synthesis request: a sentence or three, so the first audio arrives quickly. */
     static final int CHUNK_CHARS = 280;
