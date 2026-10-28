@@ -1,53 +1,35 @@
-import javax.sound.sampled.AudioInputStream;
-import javax.sound.sampled.AudioSystem;
-import javax.sound.sampled.Clip;
-import javax.sound.sampled.LineEvent;
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.text.DefaultEditorKit;
 import java.awt.*;
 import java.awt.event.KeyEvent;
-import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 /**
- * A small text editor with a Speak button. Speak runs `ollama run phonon --voice <v> <text>` on the
- * selected text (or the whole document when nothing is selected), captures the WAV that ollama
- * writes to stdout, and plays it.
- *
- * If ollama is not installed, Speak offers to install it with
- * `curl -fsSL https://ollama.com/install.sh | sh` and then continues.
+ * A small text editor with a Speak button. Speak reads the selected text (or the whole document
+ * when nothing is selected) with {@link OllamaSpeech}, sentence-sized chunk by chunk, so audio
+ * starts after the first chunk instead of after the whole text.
  *
  * No dependencies beyond the JDK. Build with `./gradlew build`; run with
- * `java -jar build/libs/speech-editor.jar`.
+ * `java -jar build/libs/speech-editor.jar`. See {@link ScreenSpeaker} for the companion app that
+ * reads text off the screen.
  */
 public class SpeechEditor extends JFrame {
 
-    private static final String MODEL = System.getProperty("speech.model", "phonon");
-    private static final String INSTALL_CMD = "curl -fsSL https://ollama.com/install.sh | sh";
-    private static final String[] DEFAULT_VOICES = {
-            "default", "Alfie", "Bryony", "Delia", "Easton", "Edwin", "Elodie-Rose", "Everly",
-            "Freya", "Hadley", "Harper", "Hugh", "Imogen"
-    };
-
     private final JTextArea text = new JTextArea();
     private final JLabel status = new JLabel("Ready");
-    private final JComboBox<String> voice = new JComboBox<>(DEFAULT_VOICES);
+    private final JComboBox<String> voice = new JComboBox<>(OllamaSpeech.DEFAULT_VOICES);
     private final JButton speakButton = new JButton("Speak");
     private final JButton stopButton = new JButton("Stop");
+    private final OllamaSpeech speech = new OllamaSpeech(this, this::setStatus);
 
     private File currentFile;
     private boolean dirty;
-    private volatile Process speechProcess;
-    private volatile Clip clip;
+    private volatile SpeechPipeline pipeline;
 
     public static void main(String[] args) {
         System.setProperty("apple.laf.useScreenMenuBar", "true");
@@ -141,7 +123,7 @@ public class SpeechEditor extends JFrame {
         voice.setMaximumSize(new Dimension(220, 30));
         tb.add(voice);
         tb.addSeparator();
-        speakButton.setToolTipText("Read the selected text (or the whole document) with ollama " + MODEL);
+        speakButton.setToolTipText("Read the selected text (or the whole document) with ollama " + OllamaSpeech.MODEL);
         speakButton.addActionListener(e -> speak());
         tb.add(speakButton);
         stopButton.addActionListener(e -> stopSpeech());
@@ -270,112 +252,45 @@ public class SpeechEditor extends JFrame {
     private void speak() {
         String selected = text.getSelectedText();
         String toRead = (selected == null || selected.isBlank()) ? text.getText() : selected;
-        toRead = toRead.strip();
-        if (toRead.isEmpty()) {
+        List<String> chunks = TextChunker.chunks(toRead, OllamaSpeech.CHUNK_CHARS);
+        if (chunks.isEmpty()) {
             setStatus("Nothing to read");
             return;
         }
         stopSpeech();
         String voiceName = String.valueOf(voice.getEditor().getItem()).strip();
-        final String finalText = toRead;
         speakButton.setEnabled(false);
         stopButton.setEnabled(true);
-        setStatus("Generating speech with ollama " + MODEL + " (" + finalText.length() + " chars)...");
+        setStatus("Generating speech with ollama " + OllamaSpeech.MODEL + " (" + toRead.strip().length()
+                + " chars in " + chunks.size() + " parts)...");
 
-        new SwingWorker<byte[], Void>() {
-            @Override
-            protected byte[] doInBackground() throws Exception {
-                return runOllama(ensureOllama(), finalText, voiceName);
-            }
-
-            @Override
-            protected void done() {
-                try {
-                    byte[] wav = get();
-                    play(wav);
-                } catch (java.util.concurrent.CancellationException ce) {
-                    setStatus("Stopped");
+        SpeechPipeline p = speech.newPipeline(voiceName);
+        pipeline = p;
+        p.start(chunks, new SpeechPipeline.Listener() {
+            public void status(String message) { whileCurrent(p, () -> setStatus(message)); }
+            public void done() { whileCurrent(p, () -> { setStatus("Done"); resetButtons(); }); }
+            public void stopped() { whileCurrent(p, () -> { setStatus("Stopped"); resetButtons(); }); }
+            public void failed(Throwable t) {
+                whileCurrent(p, () -> {
+                    setStatus("Speech failed: " + t.getMessage());
+                    error("Speech failed:\n" + t.getMessage());
                     resetButtons();
-                } catch (Exception ex) {
-                    Throwable c = ex.getCause() != null ? ex.getCause() : ex;
-                    setStatus("Speech failed: " + c.getMessage());
-                    error("Speech failed:\n" + c.getMessage());
-                    resetButtons();
-                }
+                });
             }
-        }.execute();
+        });
     }
 
-    /** Runs ollama and returns the WAV bytes it writes to stdout. */
-    private byte[] runOllama(String ollama, String content, String voiceName)
-            throws IOException, InterruptedException {
-        List<String> cmd = new ArrayList<>(List.of(ollama, "run", MODEL));
-        if (!voiceName.isEmpty() && !voiceName.equals("default")) {
-            cmd.add("--voice");
-            cmd.add(voiceName);
-        }
-        cmd.add(content);
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")));
-        Process p = pb.start();
-        speechProcess = p;
-        byte[] out;
-        try (InputStream in = p.getInputStream()) {
-            out = in.readAllBytes();
-        }
-        String err = new String(p.getErrorStream().readAllBytes(), StandardCharsets.UTF_8).strip();
-        if (!p.waitFor(5, TimeUnit.MINUTES)) {
-            p.destroyForcibly();
-            throw new IOException("ollama timed out");
-        }
-        speechProcess = null;
-        if (p.exitValue() != 0) {
-            throw new IOException("ollama exited with " + p.exitValue() + (err.isEmpty() ? "" : ": " + err));
-        }
-        if (out.length < 44 || out[0] != 'R' || out[1] != 'I' || out[2] != 'F' || out[3] != 'F') {
-            String head = new String(out, 0, Math.min(out.length, 200), StandardCharsets.UTF_8);
-            throw new IOException("ollama did not return WAV audio. Output starts with: " + head
-                    + (err.isEmpty() ? "" : "\nstderr: " + err));
-        }
-        return out;
-    }
-
-    private void play(byte[] wav) {
-        try {
-            AudioInputStream ais = AudioSystem.getAudioInputStream(new ByteArrayInputStream(wav));
-            Clip c = AudioSystem.getClip();
-            c.open(ais);
-            clip = c;
-            long seconds = c.getMicrosecondLength() / 1_000_000;
-            setStatus("Playing (" + seconds + " s)...");
-            c.addLineListener(ev -> {
-                if (ev.getType() == LineEvent.Type.STOP) {
-                    c.close();
-                    if (clip == c) clip = null;
-                    setStatus("Done");
-                    resetButtons();
-                }
-            });
-            c.start();
-        } catch (Exception ex) {
-            setStatus("Playback failed: " + ex.getMessage());
-            error("Playback failed:\n" + ex.getMessage());
-            resetButtons();
-        }
+    /** Runs {@code update} on the EDT unless a newer pipeline has replaced {@code p} meanwhile. */
+    private void whileCurrent(SpeechPipeline p, Runnable update) {
+        SwingUtilities.invokeLater(() -> {
+            if (pipeline == p) update.run();
+        });
     }
 
     private void stopSpeech() {
-        Process p = speechProcess;
-        if (p != null) {
-            p.destroyForcibly();
-            speechProcess = null;
-        }
-        Clip c = clip;
-        if (c != null) {
-            c.stop();
-            c.close();
-            clip = null;
-        }
+        SpeechPipeline p = pipeline;
+        pipeline = null;
+        if (p != null) p.stop(); else speech.cancel();
         resetButtons();
     }
 
@@ -384,79 +299,5 @@ public class SpeechEditor extends JFrame {
             speakButton.setEnabled(true);
             stopButton.setEnabled(false);
         });
-    }
-
-    /**
-     * Returns the ollama binary, installing it first when it is missing. Runs off the EDT; the
-     * confirmation dialog is shown on the EDT and this thread waits for the answer.
-     */
-    private String ensureOllama() throws IOException, InterruptedException {
-        try {
-            return findOllama();
-        } catch (IOException notFound) {
-            // fall through to install
-        }
-        final int[] answer = new int[1];
-        try {
-            SwingUtilities.invokeAndWait(() -> answer[0] = JOptionPane.showConfirmDialog(this,
-                    "ollama was not found on this machine.\nInstall it now with\n\n    " + INSTALL_CMD
-                            + "\n\nThis downloads Ollama from ollama.com and may ask for your password.",
-                    "Install Ollama", JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE));
-        } catch (java.lang.reflect.InvocationTargetException e) {
-            throw new IOException(e.getCause());
-        }
-        if (answer[0] != JOptionPane.OK_OPTION) {
-            throw new IOException("ollama not found. Install Ollama or set OLLAMA_BIN to the binary.");
-        }
-        installOllama();
-        return findOllama();
-    }
-
-    /** Runs the official install script and surfaces its output on failure. */
-    private void installOllama() throws IOException, InterruptedException {
-        setStatus("Installing ollama (" + INSTALL_CMD + ")...");
-        ProcessBuilder pb = new ProcessBuilder("/bin/sh", "-c", INSTALL_CMD);
-        pb.redirectErrorStream(true);
-        pb.redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")));
-        Process p = pb.start();
-        speechProcess = p;
-        StringBuilder log = new StringBuilder();
-        try (java.io.BufferedReader r = new java.io.BufferedReader(
-                new java.io.InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = r.readLine()) != null) {
-                log.append(line).append('\n');
-                if (!line.isBlank()) setStatus("Installing ollama: " + line.strip());
-            }
-        }
-        if (!p.waitFor(15, TimeUnit.MINUTES)) {
-            p.destroyForcibly();
-            throw new IOException("ollama install timed out");
-        }
-        speechProcess = null;
-        if (p.exitValue() != 0) {
-            String tail = log.length() > 2000 ? log.substring(log.length() - 2000) : log.toString();
-            throw new IOException("ollama install failed (exit " + p.exitValue() + "):\n" + tail.strip()
-                    + "\n\nInstall it manually from https://ollama.com/download");
-        }
-        setStatus("ollama installed");
-    }
-
-    /** ollama from $OLLAMA_BIN, $PATH, else the usual macOS install locations. */
-    private static String findOllama() throws IOException {
-        String env = System.getenv("OLLAMA_BIN");
-        if (env != null && new File(env).canExecute()) return env;
-        String path = System.getenv("PATH");
-        if (path != null) {
-            for (String dir : path.split(File.pathSeparator)) {
-                Path p = Path.of(dir, "ollama");
-                if (Files.isExecutable(p)) return p.toString();
-            }
-        }
-        for (String candidate : new String[]{"/usr/local/bin/ollama", "/opt/homebrew/bin/ollama",
-                "/Applications/Ollama.app/Contents/Resources/ollama"}) {
-            if (new File(candidate).canExecute()) return candidate;
-        }
-        throw new IOException("ollama not found. Install Ollama or set OLLAMA_BIN to the binary.");
     }
 }
