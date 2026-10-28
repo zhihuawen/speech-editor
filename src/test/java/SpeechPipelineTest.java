@@ -141,6 +141,17 @@ class SpeechPipelineTest {
         assertEquals("ollama exploded", listener.failure.getMessage());
     }
 
+    @Test
+    void reportsTheGivenVerbWhileChunksAreHandled() throws Exception {
+        Recording listener = new Recording();
+        SpeechPipeline pipeline = new SpeechPipeline(chunk -> bytes(chunk), wav -> { }, () -> { }, "Writing");
+
+        pipeline.start(List.of("one"), listener);
+        listener.awaitEnd();
+
+        assertTrue(listener.statuses.contains("Writing 1/1..."), listener.statuses.toString());
+    }
+
     /** Player that can be paused and resumed and records every call it gets, in order. */
     static final class PausablePlayer implements SpeechPipeline.Player {
         final List<String> events = new CopyOnWriteArrayList<>();

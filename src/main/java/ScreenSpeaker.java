@@ -1,32 +1,42 @@
 import javax.swing.*;
 import javax.swing.text.DefaultEditorKit;
 import java.awt.*;
+import java.awt.event.ItemEvent;
 import java.awt.event.KeyEvent;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Collects text off the screen and reads it on request. Copy Screen hides this window, lets the
  * user drag over any part of the screen with the macOS crosshair (Space switches to picking a whole
  * window), recognizes the text in the screenshot with Apple's Vision framework and adds it to the
  * end of the text pane as a new paragraph. Nothing is spoken until the user presses Speak, which
- * reads the pane (or the selection in it) with {@link OllamaSpeech}. Several captures can be
- * collected and then read in one go. Pause holds playback where it is, even mid-sentence, and the
- * same button, now reading Resume, continues from there; Stop ends it. The speed box changes the
- * reading speed at once without changing the pitch.
+ * reads the pane (or the selection in it): English with {@link OllamaSpeech}, Chinese with the
+ * macOS say command through {@link SaySpeech}, as chosen in the Language box. Several captures can
+ * be collected and then read in one go. Pause holds playback where it is, even mid-sentence, and
+ * the same button, now reading Resume, continues from there; Stop ends it. The speed box changes
+ * the reading speed at once without changing the pitch. Save WAV runs the same synthesis but
+ * writes the speech to a file instead of playing it.
  *
- * macOS only: needs {@code screencapture} and the bundled Vision helper. Run with
+ * macOS only: needs {@code screencapture}, {@code say} and the bundled Vision helper. Run with
  * {@code ./gradlew run} or {@code java -jar build/libs/screen-speaker.jar}.
  */
 public class ScreenSpeaker extends JFrame {
 
     private static final String HINT = "Press Copy Screen and drag over some text, then press Speak to hear it.";
     private static final String[] SPEEDS = {"0.75x", "1x", "1.25x", "1.5x", "1.75x", "2x", "2.5x", "3x"};
+    static final String ENGLISH = "English";
+    static final String CHINESE = "Chinese";
 
     private final JTextArea text = new JTextArea();
     private final JLabel status = new JLabel(HINT);
+    private final JComboBox<String> language = new JComboBox<>(new String[]{ENGLISH, CHINESE});
     private final JComboBox<String> voice = new JComboBox<>(OllamaSpeech.DEFAULT_VOICES);
     private final JComboBox<String> speed = new JComboBox<>(SPEEDS);
     private final JButton copyScreenButton = new JButton("Copy Screen");
@@ -40,11 +50,25 @@ public class ScreenSpeaker extends JFrame {
     };
     private final JButton pauseButton = new JButton(pauseAction);
     private final JButton stopButton = new JButton("Stop");
+    /** Shared by the toolbar button and the menu item, so both are enabled and disabled together. */
+    private final Action saveAction = new AbstractAction("Save WAV…") {
+        @Override
+        public void actionPerformed(java.awt.event.ActionEvent e) {
+            saveWav();
+        }
+    };
     private final OllamaSpeech speech = new OllamaSpeech(this, this::setStatus);
+    private final SaySpeech say = new SaySpeech();
+    /** {@code say -v ?} takes about a second, so the Chinese voices are listed in the background from the start. */
+    private final CompletableFuture<List<String>> chineseVoices =
+            CompletableFuture.supplyAsync(SaySpeech::installedChineseVoices);
+    /** The voice last chosen for each language, restored when switching back to it. */
+    private final Map<String, String> voiceByLanguage = new HashMap<>();
 
     private volatile SpeechPipeline pipeline;
     private volatile boolean capturing;
     private volatile boolean speaking;
+    private volatile boolean saving;
     private volatile boolean paused;
 
     public static void main(String[] args) {
@@ -81,13 +105,24 @@ public class ScreenSpeaker extends JFrame {
         text.setMargin(new Insets(8, 8, 8, 8));
 
         setJMenuBar(buildMenuBar());
-        add(buildToolBar(), BorderLayout.NORTH);
+        Box bars = Box.createVerticalBox(); // settings above, actions below: one row would be 850 px wide
+        bars.add(buildSettingsBar());
+        bars.add(buildActionBar());
+        add(bars, BorderLayout.NORTH);
         add(new JScrollPane(text), BorderLayout.CENTER);
         status.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
         add(status, BorderLayout.SOUTH);
 
+        // When the listing arrives after the user has already switched to Chinese, refresh the box.
+        chineseVoices.thenAccept(v -> SwingUtilities.invokeLater(() -> {
+            if (chinese()) {
+                voiceByLanguage.put(CHINESE, currentVoice());
+                showVoices(CHINESE);
+            }
+        }));
+
         updateButtons();
-        setSize(520, 380);
+        setSize(560, 400);
         placeBottomRight();
     }
 
@@ -108,6 +143,9 @@ public class ScreenSpeaker extends JFrame {
         JMenuBar bar = new JMenuBar();
 
         JMenu file = new JMenu("File");
+        saveAction.putValue(Action.ACCELERATOR_KEY, KeyStroke.getKeyStroke(KeyEvent.VK_S, menuMask | KeyEvent.SHIFT_DOWN_MASK));
+        file.add(new JMenuItem(saveAction));
+        file.addSeparator();
         file.add(item("Quit", KeyEvent.VK_Q, menuMask, e -> quit()));
         bar.add(file);
 
@@ -129,12 +167,22 @@ public class ScreenSpeaker extends JFrame {
         return bar;
     }
 
-    private JToolBar buildToolBar() {
+    /** Language, voice and speed: what Speak and Save WAV produce. */
+    private JToolBar buildSettingsBar() {
         JToolBar tb = new JToolBar();
         tb.setFloatable(false);
+        tb.add(new JLabel(" Language: "));
+        language.setMaximumSize(new Dimension(110, 30));
+        language.setToolTipText("English is read by ollama " + OllamaSpeech.MODEL + ", Chinese by the macOS say command");
+        language.addItemListener(ev -> {
+            String lang = String.valueOf(ev.getItem());
+            if (ev.getStateChange() == ItemEvent.DESELECTED) voiceByLanguage.put(lang, currentVoice());
+            else showVoices(lang);
+        });
+        tb.add(language);
         tb.add(new JLabel(" Voice: "));
         voice.setEditable(true);
-        voice.setMaximumSize(new Dimension(240, 30));
+        voice.setMaximumSize(new Dimension(200, 30));
         tb.add(voice);
         tb.add(new JLabel(" Speed: "));
         speed.setSelectedItem("1x");
@@ -142,7 +190,13 @@ public class ScreenSpeaker extends JFrame {
         speed.setToolTipText("Reading speed; a change applies right away and keeps the pitch");
         speed.addActionListener(e -> speech.setRate(parseSpeed(String.valueOf(speed.getSelectedItem()))));
         tb.add(speed);
-        tb.addSeparator();
+        return tb;
+    }
+
+    /** Copy Screen, Speak, Pause, Stop, and Save WAV. */
+    private JToolBar buildActionBar() {
+        JToolBar tb = new JToolBar();
+        tb.setFloatable(false);
         copyScreenButton.setToolTipText("Take a screenshot of a region or window and add its text to the end of the pane");
         copyScreenButton.addActionListener(e -> copyScreen());
         tb.add(copyScreenButton);
@@ -153,6 +207,10 @@ public class ScreenSpeaker extends JFrame {
         tb.add(pauseButton);
         stopButton.addActionListener(e -> stopSpeech());
         tb.add(stopButton);
+        tb.addSeparator();
+        JButton saveButton = new JButton(saveAction);
+        saveButton.setToolTipText("Write the speech of the text below (or the selected part) to a WAV file instead of playing it");
+        tb.add(saveButton);
         return tb;
     }
 
@@ -178,6 +236,23 @@ public class ScreenSpeaker extends JFrame {
         }
     }
 
+    private boolean chinese() {
+        return CHINESE.equals(language.getSelectedItem());
+    }
+
+    private String currentVoice() {
+        return String.valueOf(voice.getEditor().getItem()).strip();
+    }
+
+    /** Fills the voice box with the voices of {@code lang} and selects the one last used for it. */
+    private void showVoices(String lang) {
+        List<String> voices = CHINESE.equals(lang)
+                ? chineseVoices.getNow(List.of(SaySpeech.DEFAULT_VOICE))
+                : Arrays.asList(OllamaSpeech.DEFAULT_VOICES);
+        voice.setModel(new DefaultComboBoxModel<>(voices.toArray(new String[0])));
+        voice.setSelectedItem(voiceByLanguage.getOrDefault(lang, voices.get(0)));
+    }
+
     private void setStatus(String s) {
         SwingUtilities.invokeLater(() -> status.setText(s));
     }
@@ -187,16 +262,19 @@ public class ScreenSpeaker extends JFrame {
     }
 
     /**
-     * Copy Screen is available between captures; Speak only while nothing is playing; Pause and
-     * Stop only while something is. The pause button reads Resume while playback is held.
+     * Copy Screen is available between captures; Speak and Save WAV only while nothing is being
+     * synthesized; Pause only while something plays; Stop while something plays or is saved. The
+     * pause button reads Resume while playback is held.
      */
     private void updateButtons() {
         SwingUtilities.invokeLater(() -> {
+            boolean idle = !capturing && !speaking && !saving;
             copyScreenButton.setEnabled(!capturing);
-            speakButton.setEnabled(!capturing && !speaking);
+            speakButton.setEnabled(idle);
+            saveAction.setEnabled(idle);
             pauseAction.setEnabled(speaking);
             pauseAction.putValue(Action.NAME, paused ? "Resume" : "Pause");
-            stopButton.setEnabled(speaking);
+            stopButton.setEnabled(speaking || saving);
         });
     }
 
@@ -270,35 +348,89 @@ public class ScreenSpeaker extends JFrame {
 
     // ---------------------------------------------------------------- speech
 
-    private void speak() {
+    /** The selected part of the pane, or all of it when nothing is selected. */
+    private String textToRead() {
         String selected = text.getSelectedText();
-        speakText((selected == null || selected.isBlank()) ? text.getText() : selected);
+        return (selected == null || selected.isBlank()) ? text.getText() : selected;
     }
 
-    private void speakText(String toRead) {
-        List<String> chunks = TextChunker.chunks(toRead, OllamaSpeech.CHUNK_CHARS);
+    /** Chunks sized for the engine: Chinese characters carry more speech each than English ones. */
+    private List<String> chunksOf(String toRead) {
+        return TextChunker.chunks(toRead, chinese() ? SaySpeech.CHUNK_CHARS : OllamaSpeech.CHUNK_CHARS);
+    }
+
+    private void speak() {
+        start(textToRead(), null);
+    }
+
+    /** Asks where to put the file, then synthesizes the text into it instead of playing it. */
+    private void saveWav() {
+        String toRead = textToRead();
+        if (chunksOf(toRead).isEmpty()) {
+            setStatus("Nothing to save. Press Copy Screen to grab some text first.");
+            return;
+        }
+        FileDialog dialog = new FileDialog(this, "Save Speech as WAV", FileDialog.SAVE);
+        dialog.setFile(WavFile.suggestedName(toRead) + ".wav");
+        dialog.setVisible(true);
+        if (dialog.getFile() == null) return; // cancelled
+        Path file = WavFile.withWavExtension(Path.of(dialog.getDirectory(), dialog.getFile()));
+        boolean renamed = !file.getFileName().toString().equals(dialog.getFile());
+        if (renamed && Files.exists(file) && JOptionPane.showConfirmDialog(this,
+                file.getFileName() + " already exists. Replace it?", "Save WAV",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE) != JOptionPane.OK_OPTION) {
+            return;
+        }
+        start(toRead, file);
+    }
+
+    /** Reads {@code toRead} aloud, or, when {@code saveTo} is given, writes the speech there instead. */
+    private void start(String toRead, Path saveTo) {
+        List<String> chunks = chunksOf(toRead);
         if (chunks.isEmpty()) {
             setStatus("Nothing to read. Press Copy Screen to grab some text first.");
             return;
         }
         stopSpeech();
-        String voiceName = String.valueOf(voice.getEditor().getItem()).strip();
-        speaking = true;
+        boolean chinese = chinese();
+        String voiceName = currentVoice();
+        WavFile file = saveTo == null ? null : new WavFile();
+        speaking = file == null;
+        saving = file != null;
         paused = false;
         updateButtons();
-        setStatus("Generating speech with ollama " + OllamaSpeech.MODEL + " (" + toRead.strip().length()
-                + " chars in " + chunks.size() + " parts)...");
+        String engine = chinese ? "say " + (voiceName.isEmpty() ? SaySpeech.DEFAULT_VOICE : voiceName)
+                : "ollama " + OllamaSpeech.MODEL;
+        setStatus((saving ? "Saving speech from " : "Generating speech with ") + engine + " ("
+                + toRead.strip().length() + " chars in " + chunks.size() + " parts)...");
 
-        SpeechPipeline p = speech.newPipeline(voiceName);
+        SpeechPipeline.Synth synth = chinese
+                ? chunk -> say.synthesize(chunk, voiceName)
+                : chunk -> speech.synthesize(chunk, voiceName);
+        Runnable cancel = () -> { say.cancel(); speech.cancel(); }; // whichever is running
+        SpeechPipeline p = new SpeechPipeline(synth, saving ? file : speech, cancel, saving ? "Writing" : "Playing");
         pipeline = p;
         p.start(chunks, new SpeechPipeline.Listener() {
             public void status(String message) { whileCurrent(p, () -> setStatus(message)); }
-            public void done() { whileCurrent(p, () -> { setStatus("Done"); resetButtons(); }); }
+            public void done() {
+                if (file == null) {
+                    whileCurrent(p, () -> { setStatus("Done"); resetButtons(); });
+                    return;
+                }
+                try {
+                    file.write(saveTo, speech.rate()); // here, off the EDT: stretching a long text takes a moment
+                    String length = String.format("%.1f", file.seconds() / speech.rate());
+                    whileCurrent(p, () -> { setStatus("Saved " + saveTo + " (" + length + " s)"); resetButtons(); });
+                } catch (Exception e) {
+                    failed(e);
+                }
+            }
             public void stopped() { whileCurrent(p, () -> { setStatus("Stopped"); resetButtons(); }); }
             public void failed(Throwable t) {
+                String what = file == null ? "Speech failed: " : "Save failed: ";
                 whileCurrent(p, () -> {
-                    setStatus("Speech failed: " + t.getMessage());
-                    error("Speech failed:\n" + t.getMessage());
+                    setStatus(what + t.getMessage());
+                    error(what + "\n" + t.getMessage());
                     resetButtons();
                 });
             }
@@ -330,6 +462,7 @@ public class ScreenSpeaker extends JFrame {
 
     private void resetButtons() {
         speaking = false;
+        saving = false;
         paused = false;
         updateButtons();
     }

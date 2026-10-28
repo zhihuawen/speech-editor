@@ -5,10 +5,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 /**
- * Turns a list of text chunks into audio and plays them back to back. While one chunk plays, the
- * next one is already being synthesized, so playback starts after the first chunk instead of
- * after the whole text. Synthesis and playback are supplied by the caller so the pipeline itself
- * knows nothing about ollama or the sound system.
+ * Turns a list of text chunks into audio and hands them to a player back to back. While one chunk
+ * plays, the next one is already being synthesized, so playback starts after the first chunk
+ * instead of after the whole text. Synthesis and playback are supplied by the caller so the
+ * pipeline itself knows nothing about ollama, say, the sound system or WAV files.
  *
  * Playback can be paused and resumed. A pause reaches the player right away (so it can hold the
  * current chunk where it is) and also keeps the pipeline from starting the next chunk until
@@ -47,6 +47,7 @@ final class SpeechPipeline {
     private final Synth synth;
     private final Player player;
     private final Runnable canceller;
+    private final String verb;
     private final Object pauseLock = new Object();
     private volatile boolean cancelled;
     private volatile boolean paused;
@@ -59,12 +60,21 @@ final class SpeechPipeline {
 
     /**
      * @param canceller called from {@link #stop()} to abort whatever the synth or player is doing
-     *                  right now (kill the ollama process, stop the audio clip).
+     *                  right now (kill the ollama or say process, stop the audio clip).
      */
     SpeechPipeline(Synth synth, Player player, Runnable canceller) {
+        this(synth, player, canceller, "Playing");
+    }
+
+    /**
+     * @param verb what the player does with a chunk, for the status messages: "Playing" for
+     *             speakers, "Writing" for a {@link WavFile}.
+     */
+    SpeechPipeline(Synth synth, Player player, Runnable canceller, String verb) {
         this.synth = synth;
         this.player = player;
         this.canceller = canceller;
+        this.verb = verb;
     }
 
     void start(List<String> chunks, Listener listener) {
@@ -104,7 +114,7 @@ final class SpeechPipeline {
             pauseLock.notifyAll();
         }
         player.resume();
-        listener.status("Playing " + current + "/" + total + "...");
+        listener.status(verb + " " + current + "/" + total + "...");
     }
 
     boolean isPaused() {
@@ -135,7 +145,7 @@ final class SpeechPipeline {
                 }
                 current = i + 1;
                 awaitResume(); // a pause pressed between chunks holds the next one here
-                listener.status("Playing " + current + "/" + total + "...");
+                listener.status(verb + " " + current + "/" + total + "...");
                 player.play(wav);
                 if (cancelled) break;
             }

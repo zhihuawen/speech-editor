@@ -28,7 +28,8 @@ import java.util.function.Consumer;
  * {@code ollama run phonon --voice <v> "<text>"} writes a 16-bit mono 24 kHz WAV to stdout when
  * stdout is not a terminal; {@link #synthesize} captures those bytes and {@link #play} plays them
  * with javax.sound. If ollama is not installed, the first synthesis offers to install it with the
- * official script. Plug an instance into a {@link SpeechPipeline} via {@link #newPipeline}.
+ * official script. Screen Speaker plugs {@link #synthesize} and this player into a
+ * {@link SpeechPipeline}; the player also serves Chinese speech from {@link SaySpeech}.
  *
  * Playback can be paused in the middle of a clip: {@link #pause()} stops the clip where it is and
  * {@link #resume()} continues from the same point. {@link #setRate} changes the speed, also
@@ -68,11 +69,6 @@ final class OllamaSpeech implements SpeechPipeline.Player {
     OllamaSpeech(Component parent, Consumer<String> status) {
         this.parent = parent;
         this.status = status;
-    }
-
-    /** A pipeline that reads chunks with {@code voiceName}; the caller starts it. */
-    SpeechPipeline newPipeline(String voiceName) {
-        return new SpeechPipeline(chunk -> synthesize(chunk, voiceName), this, this::cancel);
     }
 
     /** Runs ollama on {@code text} and returns the WAV bytes it writes to stdout. */

@@ -34,4 +34,35 @@ class TextChunkerTest {
     void returnsNoChunksForBlankText() {
         assertEquals(List.of(), TextChunker.chunks("  \n\n \t", 100));
     }
+
+    // ---------------------------------------------------------------- Chinese
+
+    @Test
+    void splitsChineseTextAtItsSentenceMarks() {
+        List<String> chunks = TextChunker.chunks("第一句。第二句！第三句？第四句。", 5);
+        assertEquals(List.of("第一句。", "第二句！", "第三句？", "第四句。"), chunks);
+    }
+
+    @Test
+    void joinsChineseSentencesWithoutASpace() {
+        assertEquals(List.of("你好。再见。"), TextChunker.chunks("你好。再见。", 20));
+    }
+
+    @Test
+    void dropsLineBreaksBetweenChineseCharacters() {
+        // OCR of a wrapped paragraph puts a line break in the middle of a sentence; Chinese has
+        // no word gaps, so nothing should be inserted there.
+        assertEquals(List.of("今天天气很好。"), TextChunker.chunks("今天天气\n很好。", 20));
+    }
+
+    @Test
+    void keepsTheSpaceBetweenLatinAndChinese() {
+        assertEquals(List.of("使用 Java 语言。"), TextChunker.chunks("使用 Java\n语言。", 20));
+    }
+
+    @Test
+    void splitsAnOverlongChineseSentenceAtACommaBeforeTheLimit() {
+        List<String> chunks = TextChunker.chunks("一二三，四五六，七八九", 7);
+        assertEquals(List.of("一二三，", "四五六，七八九"), chunks);
+    }
 }
