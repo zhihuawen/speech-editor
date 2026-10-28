@@ -82,4 +82,33 @@ class OllamaSpeechPlaybackTest {
         assertFalse(player.isAlive(), "play() kept waiting after cancel");
         assertNull(failure[0]);
     }
+
+    @Test
+    void fasterRatePlaysTheClipInLessTime() throws Exception {
+        assumeSoundOutput();
+        OllamaSpeech speech = new OllamaSpeech(null, s -> { });
+        speech.setRate(2.0);
+        Throwable[] failure = new Throwable[1];
+
+        Thread player = playInBackground(speech, silence(2.0), failure);
+        player.join(1500); // the clip is two seconds long at normal speed
+
+        assertFalse(player.isAlive(), "two seconds of audio at 2x should be done in about one");
+        assertNull(failure[0]);
+    }
+
+    @Test
+    void changingTheRateTakesEffectInTheMiddleOfAClip() throws Exception {
+        assumeSoundOutput();
+        OllamaSpeech speech = new OllamaSpeech(null, s -> { });
+        Throwable[] failure = new Throwable[1];
+
+        Thread player = playInBackground(speech, silence(3.0), failure);
+        Thread.sleep(300);
+        speech.setRate(3.0); // about 2.7 s left, which is 0.9 s at 3x
+        player.join(2000);
+
+        assertFalse(player.isAlive(), "the rest of the clip should have played at 3x");
+        assertNull(failure[0]);
+    }
 }

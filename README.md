@@ -43,6 +43,7 @@ The window stays on top and parks itself in the lower right corner.
 |---|---|
 | Copy Screen | Press Copy Screen (Cmd-R). The window hides and the crosshair appears. Drag a rectangle over the text, or press Space and click a window. Esc cancels. The recognized text is added to the end of the pane as a new paragraph. Nothing is spoken yet, and playback that is already running keeps going |
 | Speak | Pick a voice and press Speak (Shift-Cmd-R). Reads the selected part of the pane, or all of it when nothing is selected. Fix a misread word in the pane and press Speak to hear it corrected |
+| Speed | Pick 0.75x to 3x next to the voice. A change applies at once, even in the middle of a sentence, and the pitch stays the same: the audio is time-stretched, not played faster |
 | Pause / Resume | Pause (Cmd-P) holds playback where it is, even in the middle of a sentence. The same button, now labelled Resume, continues from that point |
 | Edit | The pane is a normal text area: type into it, Cmd-V pastes text from any app, Cmd-C copies the recognized text out, Cmd-A selects all |
 | Stop | Stop button or Cmd-. ; ends playback for good (paused or not) and kills ollama (or the installer) if it is still running |
@@ -62,7 +63,10 @@ to an article) interleave; drag a tighter rectangle around the column you want.
 is not a terminal. `OllamaSpeech` captures those bytes and plays them with `javax.sound.sampled`.
 `TextChunker` splits the text at sentence boundaries into chunks of about 280 characters;
 `SpeechPipeline` synthesizes the next chunk while the current one plays. The first run after a
-while is slow because Ollama loads the model.
+while is slow because Ollama loads the model. Speed is applied at playback: `TimeStretch` shortens
+or lengthens the PCM with WSOLA (overlap-add of windows picked by cross-correlation), so the voice
+keeps its pitch. A speed change or a resume reopens the clip from the point reached, so both take
+effect immediately.
 
 Copy Screen runs `screencapture -i -x` for the screenshot and then the bundled `ocr` helper, which
 uses `VNRecognizeTextRequest` (accurate mode, language correction) and prints the lines in reading
@@ -77,6 +81,7 @@ install shows the script's last lines and points to https://ollama.com/download.
 ## Tests
 
 `./gradlew test` runs JUnit tests for the chunker, the pipeline (ordering, prefetch, pause and
-resume, stop, failure), the Copy Screen append rule, pausing a real clip through the sound system
-(one second of silence), and the OCR helper (unpacking, plus recognition of text drawn with Java2D
+resume, stop, failure), the Copy Screen append rule, the time stretch (length, pitch and loudness of
+a sine), pause, resume and speed changes on a real clip through the sound system (a few seconds
+of silence), and the OCR helper (unpacking, plus recognition of text drawn with Java2D
 on macOS).

@@ -22,4 +22,17 @@ class ScreenSpeakerTest {
         assertEquals("First capture.\n\nSecond capture.",
                 ScreenSpeaker.appendParagraph("First capture.\n\n\n   ", "Second capture."));
     }
+
+    @Test
+    void speedLabelsParseToTheirRate() {
+        assertEquals(1.0, ScreenSpeaker.parseSpeed("1x"));
+        assertEquals(1.25, ScreenSpeaker.parseSpeed("1.25x"));
+        assertEquals(0.75, ScreenSpeaker.parseSpeed(" 0.75x "));
+    }
+
+    @Test
+    void unreadableSpeedLabelsFallBackToNormalSpeed() {
+        assertEquals(1.0, ScreenSpeaker.parseSpeed("fast"));
+        assertEquals(1.0, ScreenSpeaker.parseSpeed(""));
+    }
 }

@@ -14,7 +14,8 @@ import java.util.Optional;
  * end of the text pane as a new paragraph. Nothing is spoken until the user presses Speak, which
  * reads the pane (or the selection in it) with {@link OllamaSpeech}. Several captures can be
  * collected and then read in one go. Pause holds playback where it is, even mid-sentence, and the
- * same button, now reading Resume, continues from there; Stop ends it.
+ * same button, now reading Resume, continues from there; Stop ends it. The speed box changes the
+ * reading speed at once without changing the pitch.
  *
  * macOS only: needs {@code screencapture} and the bundled Vision helper. Run with
  * {@code ./gradlew run} or {@code java -jar build/libs/screen-speaker.jar}.
@@ -22,10 +23,12 @@ import java.util.Optional;
 public class ScreenSpeaker extends JFrame {
 
     private static final String HINT = "Press Copy Screen and drag over some text, then press Speak to hear it.";
+    private static final String[] SPEEDS = {"0.75x", "1x", "1.25x", "1.5x", "1.75x", "2x", "2.5x", "3x"};
 
     private final JTextArea text = new JTextArea();
     private final JLabel status = new JLabel(HINT);
     private final JComboBox<String> voice = new JComboBox<>(OllamaSpeech.DEFAULT_VOICES);
+    private final JComboBox<String> speed = new JComboBox<>(SPEEDS);
     private final JButton copyScreenButton = new JButton("Copy Screen");
     private final JButton speakButton = new JButton("Speak");
     /** One action for the toolbar button and the menu item, so both flip between Pause and Resume. */
@@ -128,6 +131,12 @@ public class ScreenSpeaker extends JFrame {
         voice.setEditable(true);
         voice.setMaximumSize(new Dimension(200, 30));
         tb.add(voice);
+        tb.add(new JLabel(" Speed: "));
+        speed.setSelectedItem("1x");
+        speed.setMaximumSize(new Dimension(90, 30));
+        speed.setToolTipText("Reading speed; a change applies right away and keeps the pitch");
+        speed.addActionListener(e -> speech.setRate(parseSpeed(String.valueOf(speed.getSelectedItem()))));
+        tb.add(speed);
         tb.addSeparator();
         copyScreenButton.setToolTipText("Take a screenshot of a region or window and add its text to the end of the pane");
         copyScreenButton.addActionListener(e -> copyScreen());
@@ -153,6 +162,15 @@ public class ScreenSpeaker extends JFrame {
         a.putValue(Action.NAME, name);
         a.putValue(Action.ACCELERATOR_KEY, KeyStroke.getKeyStroke(key, mask));
         return new JMenuItem(a);
+    }
+
+    /** "1.5x" to 1.5; anything unreadable means normal speed. */
+    static double parseSpeed(String label) {
+        try {
+            return Double.parseDouble(label.strip().replaceFirst("[xX×]$", ""));
+        } catch (NumberFormatException e) {
+            return 1.0;
+        }
     }
 
     private void setStatus(String s) {

@@ -31,7 +31,8 @@ import java.util.function.Consumer;
  * official script. Plug an instance into a {@link SpeechPipeline} via {@link #newPipeline}.
  *
  * Playback can be paused in the middle of a clip: {@link #pause()} stops the clip where it is and
- * {@link #resume()} starts it again from the same frame.
+ * {@link #resume()} continues from the same point. {@link #setRate} changes the speed, also
+ * mid-clip, by time-stretching the remaining audio with {@link TimeStretch} (pitch unchanged).
  */
 final class OllamaSpeech implements SpeechPipeline.Player {
 
@@ -50,6 +51,10 @@ final class OllamaSpeech implements SpeechPipeline.Player {
     private volatile Process process;
     private volatile Clip clip;
     private volatile boolean paused;
+    private volatile boolean cancelled;
+    private volatile double rate = 1.0;
+    /** Set by {@link #setRate} until {@link #play} has reopened the clip at the new rate. */
+    private volatile boolean rateChanged;
 
     /**
      * @param parent window that owns the "install ollama?" dialog
@@ -100,7 +105,8 @@ final class OllamaSpeech implements SpeechPipeline.Player {
 
     /**
      * Plays a WAV and returns when it has finished, or when {@link #cancel} or an interrupt ends it.
-     * A {@link #pause()} holds the clip where it is until {@link #resume()}.
+     * A {@link #pause()} holds the clip where it is until {@link #resume()}; a {@link #setRate}
+     * applies to the rest of the clip right away.
      */
     @Override
     public void play(byte[] wav) throws Exception {
@@ -112,23 +118,32 @@ final class OllamaSpeech implements SpeechPipeline.Player {
         }
         int frameSize = format.getFrameSize();
         int end = pcm.length / frameSize * frameSize;
-        int offset = 0; // bytes played so far
-        // Every (re)start gets a fresh Clip opened at the offset where the pause landed. A DirectClip
-        // that has been stopped and started again keeps playing but sends no more line events (seen
-        // on JDK 21), so a restarted clip would never report that it finished.
-        while (offset < end) {
+        int offset = 0; // bytes of the original audio played so far
+        cancelled = false;
+        // Every (re)start gets a fresh Clip opened at the point reached, stretched at the current
+        // rate. A DirectClip that has been stopped and started again keeps playing but sends no more
+        // line events (seen on JDK 21), so a restarted clip would never report that it finished.
+        while (offset < end && !cancelled) {
+            double r;
+            synchronized (pauseLock) {
+                r = TimeStretch.supports(format) ? rate : 1.0;
+                rateChanged = false;
+            }
+            byte[] data = TimeStretch.stretch(pcm, offset, end - offset, format, r);
             Clip c = AudioSystem.getClip();
             BlockingQueue<Boolean> stops = new LinkedBlockingQueue<>();
             c.addLineListener(ev -> {
                 if (ev.getType() == LineEvent.Type.STOP) stops.add(Boolean.TRUE);
             });
-            c.open(format, pcm, offset, end - offset);
+            c.open(format, data, 0, data.length);
             clip = c;
             try {
-                if (!startWhenNotPaused(c)) return; // cancelled while paused
-                stops.take(); // the clip stopped: it finished, was paused, or was cancelled
-                if (!paused) return; // finished or cancelled
-                offset += c.getFramePosition() * frameSize; // where the pause landed
+                Start started = startWhenNotPaused(c);
+                if (started == Start.CANCELLED) return;
+                if (started == Start.RESTART) continue; // the rate changed during a pause; nothing played yet
+                stops.take(); // the clip stopped: finished, paused, cancelled, or the rate changed
+                if (cancelled || (!paused && !rateChanged)) return;
+                offset += (int) Math.round(c.getFramePosition() * r) * frameSize; // the point reached, in the original
             } finally {
                 c.close();
                 if (clip == c) clip = null;
@@ -136,14 +151,32 @@ final class OllamaSpeech implements SpeechPipeline.Player {
         }
     }
 
-    /** Waits out a pause, then starts the clip. False once {@link #cancel} closed it meanwhile. */
-    private boolean startWhenNotPaused(Clip c) throws InterruptedException {
+    private enum Start { STARTED, RESTART, CANCELLED }
+
+    /** Waits out a pause, then starts the clip, unless it was cancelled or needs reopening meanwhile. */
+    private Start startWhenNotPaused(Clip c) throws InterruptedException {
         synchronized (pauseLock) {
             while (paused) pauseLock.wait();
-            if (!c.isOpen()) return false;
+            if (cancelled || !c.isOpen()) return Start.CANCELLED;
+            if (rateChanged) return Start.RESTART;
             c.start();
-            return true;
+            return Start.STARTED;
         }
+    }
+
+    /** Playback speed, 1 being normal. Takes effect at once, even in the middle of a clip. */
+    void setRate(double newRate) {
+        synchronized (pauseLock) {
+            if (newRate == rate) return;
+            rate = newRate;
+            rateChanged = true;
+            Clip c = clip;
+            if (c != null && !paused) c.stop(); // play() reopens from the point reached, at the new rate
+        }
+    }
+
+    double rate() {
+        return rate;
     }
 
     /** Stops the playing clip where it is; {@link #play} keeps waiting instead of returning. */
@@ -174,6 +207,7 @@ final class OllamaSpeech implements SpeechPipeline.Player {
             process = null;
         }
         synchronized (pauseLock) {
+            cancelled = true;
             paused = false;
             Clip c = clip;
             if (c != null) {
