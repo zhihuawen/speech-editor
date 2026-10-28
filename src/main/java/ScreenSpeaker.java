@@ -13,7 +13,8 @@ import java.util.Optional;
  * window), recognizes the text in the screenshot with Apple's Vision framework and adds it to the
  * end of the text pane as a new paragraph. Nothing is spoken until the user presses Speak, which
  * reads the pane (or the selection in it) with {@link OllamaSpeech}. Several captures can be
- * collected and then read in one go.
+ * collected and then read in one go. Pause holds playback where it is, even mid-sentence, and the
+ * same button, now reading Resume, continues from there; Stop ends it.
  *
  * macOS only: needs {@code screencapture} and the bundled Vision helper. Run with
  * {@code ./gradlew run} or {@code java -jar build/libs/screen-speaker.jar}.
@@ -27,12 +28,21 @@ public class ScreenSpeaker extends JFrame {
     private final JComboBox<String> voice = new JComboBox<>(OllamaSpeech.DEFAULT_VOICES);
     private final JButton copyScreenButton = new JButton("Copy Screen");
     private final JButton speakButton = new JButton("Speak");
+    /** One action for the toolbar button and the menu item, so both flip between Pause and Resume. */
+    private final Action pauseAction = new AbstractAction("Pause") {
+        @Override
+        public void actionPerformed(java.awt.event.ActionEvent e) {
+            togglePause();
+        }
+    };
+    private final JButton pauseButton = new JButton(pauseAction);
     private final JButton stopButton = new JButton("Stop");
     private final OllamaSpeech speech = new OllamaSpeech(this, this::setStatus);
 
     private volatile SpeechPipeline pipeline;
     private volatile boolean capturing;
     private volatile boolean speaking;
+    private volatile boolean paused;
 
     public static void main(String[] args) {
         System.setProperty("apple.laf.useScreenMenuBar", "true");
@@ -104,6 +114,8 @@ public class ScreenSpeaker extends JFrame {
         JMenu speechMenu = new JMenu("Speech");
         speechMenu.add(item("Copy Screen", KeyEvent.VK_R, menuMask, e -> copyScreen()));
         speechMenu.add(item("Speak Text", KeyEvent.VK_R, menuMask | KeyEvent.SHIFT_DOWN_MASK, e -> speak()));
+        pauseAction.putValue(Action.ACCELERATOR_KEY, KeyStroke.getKeyStroke(KeyEvent.VK_P, menuMask));
+        speechMenu.add(new JMenuItem(pauseAction));
         speechMenu.add(item("Stop", KeyEvent.VK_PERIOD, menuMask, e -> stopSpeech()));
         bar.add(speechMenu);
         return bar;
@@ -123,6 +135,8 @@ public class ScreenSpeaker extends JFrame {
         speakButton.setToolTipText("Read the text below (or the selected part of it)");
         speakButton.addActionListener(e -> speak());
         tb.add(speakButton);
+        pauseButton.setToolTipText("Hold playback where it is; press again to continue from that point");
+        tb.add(pauseButton);
         stopButton.addActionListener(e -> stopSpeech());
         tb.add(stopButton);
         return tb;
@@ -149,11 +163,16 @@ public class ScreenSpeaker extends JFrame {
         SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this, msg, "Error", JOptionPane.ERROR_MESSAGE));
     }
 
-    /** Copy Screen is available between captures; Speak only while nothing is playing; Stop only while it is. */
+    /**
+     * Copy Screen is available between captures; Speak only while nothing is playing; Pause and
+     * Stop only while something is. The pause button reads Resume while playback is held.
+     */
     private void updateButtons() {
         SwingUtilities.invokeLater(() -> {
             copyScreenButton.setEnabled(!capturing);
             speakButton.setEnabled(!capturing && !speaking);
+            pauseAction.setEnabled(speaking);
+            pauseAction.putValue(Action.NAME, paused ? "Resume" : "Pause");
             stopButton.setEnabled(speaking);
         });
     }
@@ -242,6 +261,7 @@ public class ScreenSpeaker extends JFrame {
         stopSpeech();
         String voiceName = String.valueOf(voice.getEditor().getItem()).strip();
         speaking = true;
+        paused = false;
         updateButtons();
         setStatus("Generating speech with ollama " + OllamaSpeech.MODEL + " (" + toRead.strip().length()
                 + " chars in " + chunks.size() + " parts)...");
@@ -269,6 +289,15 @@ public class ScreenSpeaker extends JFrame {
         });
     }
 
+    /** Pause holds playback where it is; pressed again (now Resume) it continues from that point. */
+    private void togglePause() {
+        SpeechPipeline p = pipeline;
+        if (p == null || !speaking) return;
+        if (p.isPaused()) p.resume(); else p.pause();
+        paused = p.isPaused();
+        updateButtons();
+    }
+
     private void stopSpeech() {
         SpeechPipeline p = pipeline;
         pipeline = null;
@@ -278,6 +307,7 @@ public class ScreenSpeaker extends JFrame {
 
     private void resetButtons() {
         speaking = false;
+        paused = false;
         updateButtons();
     }
 }

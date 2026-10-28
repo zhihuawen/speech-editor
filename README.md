@@ -43,8 +43,9 @@ The window stays on top and parks itself in the lower right corner.
 |---|---|
 | Copy Screen | Press Copy Screen (Cmd-R). The window hides and the crosshair appears. Drag a rectangle over the text, or press Space and click a window. Esc cancels. The recognized text is added to the end of the pane as a new paragraph. Nothing is spoken yet, and playback that is already running keeps going |
 | Speak | Pick a voice and press Speak (Shift-Cmd-R). Reads the selected part of the pane, or all of it when nothing is selected. Fix a misread word in the pane and press Speak to hear it corrected |
+| Pause / Resume | Pause (Cmd-P) holds playback where it is, even in the middle of a sentence. The same button, now labelled Resume, continues from that point |
 | Edit | The pane is a normal text area: type into it, Cmd-V pastes text from any app, Cmd-C copies the recognized text out, Cmd-A selects all |
-| Stop | Stop button or Cmd-. ; kills ollama (or the installer) if it is still running |
+| Stop | Stop button or Cmd-. ; ends playback for good (paused or not) and kills ollama (or the installer) if it is still running |
 
 **Screen Recording permission.** macOS lets `screencapture` see other apps' windows only after the
 responsible app has Screen Recording permission: Terminal or your IDE when you use `./gradlew run`,
@@ -75,6 +76,7 @@ install shows the script's last lines and points to https://ollama.com/download.
 
 ## Tests
 
-`./gradlew test` runs JUnit tests for the chunker, the pipeline (ordering, prefetch, stop, failure),
-the Copy Screen append rule, and the OCR helper (unpacking, plus recognition of text drawn with
-Java2D on macOS).
+`./gradlew test` runs JUnit tests for the chunker, the pipeline (ordering, prefetch, pause and
+resume, stop, failure), the Copy Screen append rule, pausing a real clip through the sound system
+(one second of silence), and the OCR helper (unpacking, plus recognition of text drawn with Java2D
+on macOS).

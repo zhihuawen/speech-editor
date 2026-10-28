@@ -7,6 +7,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SpeechPipelineTest {
@@ -138,5 +139,62 @@ class SpeechPipelineTest {
         assertEquals(List.of("one"), played);
         assertEquals(List.of("failed"), listener.ends);
         assertEquals("ollama exploded", listener.failure.getMessage());
+    }
+
+    /** Player that can be paused and resumed and records every call it gets, in order. */
+    static final class PausablePlayer implements SpeechPipeline.Player {
+        final List<String> events = new CopyOnWriteArrayList<>();
+        private final java.util.function.Consumer<String> onPlay;
+
+        PausablePlayer(java.util.function.Consumer<String> onPlay) { this.onPlay = onPlay; }
+
+        public void play(byte[] wav) { events.add("play:" + string(wav)); onPlay.accept(string(wav)); }
+        public void pause() { events.add("pause"); }
+        public void resume() { events.add("resume"); }
+    }
+
+    private static void waitUntilPaused(Recording listener, String status) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 2000;
+        while (!listener.statuses.contains(status) && System.currentTimeMillis() < deadline) Thread.sleep(10);
+        assertTrue(listener.statuses.contains(status), () -> "never saw '" + status + "' in " + listener.statuses);
+    }
+
+    @Test
+    void pauseHoldsTheNextChunkUntilResume() throws Exception {
+        CountDownLatch secondChunkStarted = new CountDownLatch(1);
+        SpeechPipeline[] holder = new SpeechPipeline[1];
+        PausablePlayer player = new PausablePlayer(chunk -> {
+            if (chunk.equals("one")) holder[0].pause(); // the pause lands while chunk one is playing
+            if (chunk.equals("two")) secondChunkStarted.countDown();
+        });
+        Recording listener = new Recording();
+        holder[0] = new SpeechPipeline(chunk -> bytes(chunk), player, () -> { });
+
+        holder[0].start(List.of("one", "two"), listener);
+        waitUntilPaused(listener, "Paused at 1/2");
+
+        assertFalse(secondChunkStarted.await(300, TimeUnit.MILLISECONDS), "chunk two must wait while paused");
+        holder[0].resume();
+        assertTrue(secondChunkStarted.await(2, TimeUnit.SECONDS), "chunk two should play after resume");
+        listener.awaitEnd();
+
+        assertEquals(List.of("play:one", "pause", "resume", "play:two"), player.events);
+        assertEquals(List.of("done"), listener.ends);
+    }
+
+    @Test
+    void stopWhilePausedReportsStoppedWithoutPlayingMore() throws Exception {
+        SpeechPipeline[] holder = new SpeechPipeline[1];
+        PausablePlayer player = new PausablePlayer(chunk -> holder[0].pause());
+        Recording listener = new Recording();
+        holder[0] = new SpeechPipeline(chunk -> bytes(chunk), player, () -> { });
+
+        holder[0].start(List.of("one", "two"), listener);
+        waitUntilPaused(listener, "Paused at 1/2");
+        holder[0].stop();
+        listener.awaitEnd();
+
+        assertEquals(List.of("stopped"), listener.ends);
+        assertEquals(List.of("play:one", "pause"), player.events);
     }
 }

@@ -1,3 +1,4 @@
+import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.Clip;
@@ -16,7 +17,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
@@ -27,8 +29,11 @@ import java.util.function.Consumer;
  * stdout is not a terminal; {@link #synthesize} captures those bytes and {@link #play} plays them
  * with javax.sound. If ollama is not installed, the first synthesis offers to install it with the
  * official script. Plug an instance into a {@link SpeechPipeline} via {@link #newPipeline}.
+ *
+ * Playback can be paused in the middle of a clip: {@link #pause()} stops the clip where it is and
+ * {@link #resume()} starts it again from the same frame.
  */
-final class OllamaSpeech {
+final class OllamaSpeech implements SpeechPipeline.Player {
 
     static final String MODEL = System.getProperty("speech.model", "phonon");
     static final String INSTALL_CMD = "curl -fsSL https://ollama.com/install.sh | sh";
@@ -41,8 +46,10 @@ final class OllamaSpeech {
 
     private final Component parent;
     private final Consumer<String> status;
+    private final Object pauseLock = new Object();
     private volatile Process process;
     private volatile Clip clip;
+    private volatile boolean paused;
 
     /**
      * @param parent window that owns the "install ollama?" dialog
@@ -55,7 +62,7 @@ final class OllamaSpeech {
 
     /** A pipeline that reads chunks with {@code voiceName}; the caller starts it. */
     SpeechPipeline newPipeline(String voiceName) {
-        return new SpeechPipeline(chunk -> synthesize(chunk, voiceName), this::play, this::cancel);
+        return new SpeechPipeline(chunk -> synthesize(chunk, voiceName), this, this::cancel);
     }
 
     /** Runs ollama on {@code text} and returns the WAV bytes it writes to stdout. */
@@ -91,37 +98,90 @@ final class OllamaSpeech {
         return out;
     }
 
-    /** Plays a WAV and returns when it has finished, or when {@link #cancel} or an interrupt ends it. */
-    void play(byte[] wav) throws Exception {
-        AudioInputStream ais = AudioSystem.getAudioInputStream(new ByteArrayInputStream(wav));
-        Clip c = AudioSystem.getClip();
-        CountDownLatch finished = new CountDownLatch(1);
-        c.addLineListener(ev -> {
-            if (ev.getType() == LineEvent.Type.STOP) finished.countDown();
-        });
-        c.open(ais);
-        clip = c;
-        try {
-            c.start();
-            finished.await();
-        } finally {
-            c.close();
-            if (clip == c) clip = null;
+    /**
+     * Plays a WAV and returns when it has finished, or when {@link #cancel} or an interrupt ends it.
+     * A {@link #pause()} holds the clip where it is until {@link #resume()}.
+     */
+    @Override
+    public void play(byte[] wav) throws Exception {
+        AudioFormat format;
+        byte[] pcm;
+        try (AudioInputStream ais = AudioSystem.getAudioInputStream(new ByteArrayInputStream(wav))) {
+            format = ais.getFormat();
+            pcm = ais.readAllBytes();
+        }
+        int frameSize = format.getFrameSize();
+        int end = pcm.length / frameSize * frameSize;
+        int offset = 0; // bytes played so far
+        // Every (re)start gets a fresh Clip opened at the offset where the pause landed. A DirectClip
+        // that has been stopped and started again keeps playing but sends no more line events (seen
+        // on JDK 21), so a restarted clip would never report that it finished.
+        while (offset < end) {
+            Clip c = AudioSystem.getClip();
+            BlockingQueue<Boolean> stops = new LinkedBlockingQueue<>();
+            c.addLineListener(ev -> {
+                if (ev.getType() == LineEvent.Type.STOP) stops.add(Boolean.TRUE);
+            });
+            c.open(format, pcm, offset, end - offset);
+            clip = c;
+            try {
+                if (!startWhenNotPaused(c)) return; // cancelled while paused
+                stops.take(); // the clip stopped: it finished, was paused, or was cancelled
+                if (!paused) return; // finished or cancelled
+                offset += c.getFramePosition() * frameSize; // where the pause landed
+            } finally {
+                c.close();
+                if (clip == c) clip = null;
+            }
         }
     }
 
-    /** Kills a running ollama (or installer) process and stops any playing clip. */
+    /** Waits out a pause, then starts the clip. False once {@link #cancel} closed it meanwhile. */
+    private boolean startWhenNotPaused(Clip c) throws InterruptedException {
+        synchronized (pauseLock) {
+            while (paused) pauseLock.wait();
+            if (!c.isOpen()) return false;
+            c.start();
+            return true;
+        }
+    }
+
+    /** Stops the playing clip where it is; {@link #play} keeps waiting instead of returning. */
+    @Override
+    public void pause() {
+        synchronized (pauseLock) {
+            if (paused) return;
+            paused = true;
+            Clip c = clip;
+            if (c != null) c.stop();
+        }
+    }
+
+    /** Lets a paused clip continue from the frame it stopped at. */
+    @Override
+    public void resume() {
+        synchronized (pauseLock) {
+            paused = false;
+            pauseLock.notifyAll();
+        }
+    }
+
+    /** Kills a running ollama (or installer) process and stops any playing or paused clip. */
     void cancel() {
         Process p = process;
         if (p != null) {
             p.destroyForcibly();
             process = null;
         }
-        Clip c = clip;
-        if (c != null) {
-            c.stop();
-            c.close();
-            clip = null;
+        synchronized (pauseLock) {
+            paused = false;
+            Clip c = clip;
+            if (c != null) {
+                c.stop();
+                c.close();
+                clip = null;
+            }
+            pauseLock.notifyAll();
         }
     }
 
