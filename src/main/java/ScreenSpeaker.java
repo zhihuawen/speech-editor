@@ -55,6 +55,10 @@ public class ScreenSpeaker extends JFrame {
                 UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             } catch (Exception ignored) {
             }
+            // The .app bundle carries the icon in its Info.plist; this covers `./gradlew run`.
+            if (Taskbar.isTaskbarSupported() && Taskbar.getTaskbar().isSupported(Taskbar.Feature.ICON_IMAGE)) {
+                Taskbar.getTaskbar().setIconImage(AppIcon.render(512));
+            }
             new ScreenSpeaker().setVisible(true);
         });
     }
@@ -69,6 +73,7 @@ public class ScreenSpeaker extends JFrame {
             }
         });
         setAlwaysOnTop(true);
+        setIconImage(AppIcon.render(128)); // window icon on platforms that show one
 
         text.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 14));
         text.setLineWrap(true);

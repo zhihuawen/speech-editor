@@ -46,6 +46,7 @@ tasks.test {
     useJUnitPlatform()
     dependsOn(compileOcr)
     if (isMac) systemProperty("ocr.helper", ocrHelperBinary.get().asFile.absolutePath)
+    systemProperty("java.awt.headless", "true") // tests draw images and play sound, never open windows
     testLogging { events("passed", "failed", "skipped"); exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
 }
 
@@ -67,13 +68,38 @@ tasks.jar {
     manifest { attributes("Main-Class" to "ScreenSpeaker") }
 }
 
+// ---------------------------------------------------------------- app icon (macOS)
+// AppIcon.java draws the icon; iconutil packs the sizes into the .icns that jpackage puts on the bundle.
+val appName = "Screen Speaker"
+val iconSet = layout.buildDirectory.dir("icon/$appName.iconset")
+val iconFile = layout.buildDirectory.file("icon/$appName.icns")
+
+val renderIconSet by tasks.registering(JavaExec::class) {
+    group = "build"
+    description = "Draws the app icon at every size macOS wants into build/icon/$appName.iconset."
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("AppIcon")
+    jvmArgs("-Djava.awt.headless=true")
+    args(iconSet.get().asFile.absolutePath)
+    outputs.dir(iconSet)
+}
+
+val appIcon by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Packs the iconset into build/icon/$appName.icns with iconutil (macOS only)."
+    dependsOn(renderIconSet)
+    inputs.dir(iconSet)
+    outputs.file(iconFile)
+    onlyIf("iconutil exists only on macOS") { isMac }
+    commandLine("iconutil", "-c", "icns", iconSet.get().asFile.absolutePath, "-o", iconFile.get().asFile.absolutePath)
+}
+
 // ---------------------------------------------------------------- macOS .app bundle
 // ./gradlew appImage -> build/app/Screen Speaker.app (bundles its own Java runtime)
-val appName = "Screen Speaker"
 tasks.register<Exec>("appImage") {
     group = "distribution"
     description = "Builds build/app/$appName.app with jpackage (bundles its own runtime)."
-    dependsOn(tasks.jar)
+    dependsOn(tasks.jar, appIcon)
     val input = layout.buildDirectory.dir("jpackage-input")
     val dest = layout.buildDirectory.dir("app")
     doFirst {
@@ -87,6 +113,7 @@ tasks.register<Exec>("appImage") {
         "--dest", dest.get().asFile.absolutePath,
         "--input", input.get().asFile.absolutePath,
         "--main-jar", tasks.jar.get().archiveFileName.get(), "--main-class", "ScreenSpeaker",
+        "--icon", iconFile.get().asFile.absolutePath,
         "--java-options", "-Dapple.laf.useScreenMenuBar=true",
     )
 }

@@ -68,6 +68,11 @@ or lengthens the PCM with WSOLA (overlap-add of windows picked by cross-correlat
 keeps its pitch. A speed change or a resume reopens the clip from the point reached, so both take
 effect immediately.
 
+The app icon (a screen with lines of text and a speaker on a blue square) is drawn by
+`AppIcon.java` with Java2D; `./gradlew appImage` renders it at every size macOS wants, packs the
+set into `Screen Speaker.icns` with `iconutil`, and hands that to jpackage. Run from sources, the
+app puts the same drawing in the Dock itself.
+
 Copy Screen runs `screencapture -i -x` for the screenshot and then the bundled `ocr` helper, which
 uses `VNRecognizeTextRequest` (accurate mode, language correction) and prints the lines in reading
 order with blank lines where a vertical gap looks like a paragraph break. The helper is unpacked
