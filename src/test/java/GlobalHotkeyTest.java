@@ -82,6 +82,63 @@ class GlobalHotkeyTest {
         assertEquals("⇧⌘2", GlobalHotkey.parse(GlobalHotkey.DEFAULT_SPEC).label());
     }
 
+    // ------------------------------------------------------------ the user's choice
+
+    @Test
+    void everyPresetParsesAndTheDefaultIsOneOfThem() {
+        for (String preset : GlobalHotkey.PRESETS) GlobalHotkey.parse(preset);
+        assertTrue(GlobalHotkey.PRESETS.contains(GlobalHotkey.DEFAULT_SPEC));
+    }
+
+    @Test
+    void noneAndOffMeanNoShortcut() {
+        assertTrue(GlobalHotkey.isOff("none"));
+        assertTrue(GlobalHotkey.isOff(" OFF "));
+        assertTrue(GlobalHotkey.isOff(""));
+        assertTrue(!GlobalHotkey.isOff("shift+cmd+2"));
+    }
+
+    /** A scratch preferences node, removed afterwards, and the system property put back as it was. */
+    private static void withChoiceStore(ThrowingConsumer<java.util.prefs.Preferences> body) throws Exception {
+        java.util.prefs.Preferences node = java.util.prefs.Preferences.userRoot().node("dev/zhihua/screen-speaker-test");
+        String property = System.getProperty(GlobalHotkey.PROPERTY);
+        System.clearProperty(GlobalHotkey.PROPERTY);
+        try {
+            body.accept(node);
+        } finally {
+            node.removeNode();
+            if (property != null) System.setProperty(GlobalHotkey.PROPERTY, property);
+        }
+    }
+
+    interface ThrowingConsumer<T> {
+        void accept(T t) throws Exception;
+    }
+
+    @Test
+    void theChoiceIsTheDefaultUntilSomethingIsRemembered() throws Exception {
+        withChoiceStore(node -> assertEquals(GlobalHotkey.DEFAULT_SPEC, GlobalHotkey.currentSpec(node)));
+    }
+
+    @Test
+    void aRememberedChoiceComesBackNextTime() throws Exception {
+        withChoiceStore(node -> {
+            GlobalHotkey.remember(node, "alt+cmd+r");
+            assertEquals("alt+cmd+r", GlobalHotkey.currentSpec(node));
+            GlobalHotkey.remember(node, "none");
+            assertEquals("none", GlobalHotkey.currentSpec(node));
+        });
+    }
+
+    @Test
+    void theSystemPropertyOverridesTheRememberedChoice() throws Exception {
+        withChoiceStore(node -> {
+            GlobalHotkey.remember(node, "alt+cmd+r");
+            System.setProperty(GlobalHotkey.PROPERTY, "ctrl+f5");
+            assertEquals("ctrl+f5", GlobalHotkey.currentSpec(node));
+        });
+    }
+
     // ------------------------------------------------------------ talking to the helper (fake helpers)
 
     private static Path script(Path dir, String body) throws IOException {

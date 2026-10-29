@@ -40,9 +40,10 @@ java -jar build/libs/screen-speaker.jar
 
 Or double-click `Screen Speaker.app`. The app finds `ollama` via `OLLAMA_BIN`, then `PATH`, then
 `/usr/local/bin`, `/opt/homebrew/bin` and `/Applications/Ollama.app`. Set `-Dspeech.model=<name>`
-to use a model other than `phonon`. Set `-Dscreen.hotkey=<keys>` to put the system-wide shortcut on
-another key (`alt+cmd+r`, `ctrl+f5`, `⌃⌥⌘R`: a letter, digit, `space` or `f1`..`f12` with any of
-`cmd`, `shift`, `alt`, `ctrl`), or `-Dscreen.hotkey=none` for no shortcut.
+to use a model other than `phonon`. The system-wide shortcut is picked in Speech > Copy Screen
+Shortcut; `-Dscreen.hotkey=<keys>` overrides that choice for one run (`alt+cmd+r`, `ctrl+f5`, `⌃⌥⌘R`:
+a letter, digit, `space` or `f1`..`f12` with any of `cmd`, `shift`, `alt`, `ctrl`), and
+`-Dscreen.hotkey=none` runs without one.
 
 ## Using it
 
@@ -53,7 +54,7 @@ voice and speed; the row below it holds the actions.
 |---|---|
 | Language | English or Chinese. English is read by ollama `phonon`, Chinese by the macOS `say` command. The voice list changes with the language, and each language remembers the voice you last picked |
 | Copy Screen | Press Copy Screen (Cmd-R). The window hides and the crosshair appears. Drag a rectangle over the text, or press Space and click a window. Esc cancels. The recognized text is added to the end of the pane as a new paragraph. Nothing is spoken yet, and playback that is already running keeps going |
-| ⇧⌘2 anywhere | Press Shift-Cmd-2 in any app, without switching to Screen Speaker: the same capture starts, and the text lands at the end of the pane while the app you were in stays in front, so several captures can be collected while reading. The key is registered when Screen Speaker starts; if that fails (another app owns the key, or the helper is missing) the status bar says so and Copy Screen still works from the window |
+| ⇧⌘2 anywhere | Press Shift-Cmd-2 in any app, without switching to Screen Speaker: the same capture starts, and the text lands at the end of the pane while the app you were in stays in front, so several captures can be collected while reading. Speech > Copy Screen Shortcut changes the key: ⇧⌘2, ⌥⌘R, ⌃⌥⌘R, ⌃⌥Space, Other… for any combination, or None. The change applies at once and is remembered. If a key cannot be registered (another app owns it, or the helper is missing) the status bar says so and Copy Screen still works from the window |
 | Speak | Pick a voice and press Speak (Shift-Cmd-R). Reads the selected part of the pane, or all of it when nothing is selected. Fix a misread word in the pane and press Speak to hear it corrected |
 | Speed | Pick 0.75x to 3x next to the voice. A change applies at once, even in the middle of a sentence, and the pitch stays the same: the audio is time-stretched, not played faster |
 | Pause / Resume | Pause (Cmd-P) holds playback where it is, even in the middle of a sentence. The same button, now labelled Resume, continues from that point |
@@ -119,7 +120,8 @@ no Accessibility permission, prints `ready`, then `pressed` for every hit wherev
 exits when its stdin closes, so it dies with the app. The press only arrives through the
 application event loop (a bare `CFRunLoopRun()` registers fine and then never hears a thing), so
 the helper runs `NSApplication`'s loop as a background-only process. `GlobalHotkey` runs it and turns each `pressed`
-line into a Copy Screen. A capture started that way puts the window back without taking the
+line into a Copy Screen; a new choice in the menu stops the helper and starts another, and is kept
+in the user's Java preferences. A capture started that way puts the window back without taking the
 keyboard: shown with auto-request-focus off, a Java window on macOS comes back without becoming the
 key window, so the app the key was pressed in stays in front; from the button or the menu the window
 takes the focus back as before.
@@ -136,7 +138,8 @@ stretch (length, pitch and loudness of a sine), pause, resume and speed changes 
 through the sound system (a few seconds of silence), `say` (a real Chinese WAV, the uninstalled
 voice error, the voice listing), the WAV file (concatenation, speed, format checks, file names),
 the OCR helper (unpacking, plus recognition of text drawn with Java2D on macOS), and the system-wide
-shortcut (key specs, the helper protocol driven by fake helpers, the real helper registering a key
-and exiting when its stdin closes, and one real press: `src/test/swift/press.swift` posts the
+shortcut (key specs, the remembered choice and the flag that overrides it, the helper protocol
+driven by fake helpers, the real helper registering a key and exiting when its stdin closes, and one
+real press: `src/test/swift/press.swift` posts the
 modifier keys and the key at the HID level and the helper must report it; that test skips unless the
 terminal running the tests has Accessibility permission).

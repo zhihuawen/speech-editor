@@ -6,12 +6,16 @@ import java.awt.event.KeyEvent;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.prefs.Preferences;
 
 /**
  * Collects text off the screen and reads it on request. Copy Screen hides this window, lets the
@@ -21,8 +25,9 @@ import java.util.concurrent.CompletableFuture;
  * reads the pane (or the selection in it): English with {@link OllamaSpeech}, Chinese with the
  * macOS say command through {@link SaySpeech}, as chosen in the Language box. Several captures can
  * be collected and then read in one go. The same capture is one key away in any app: the system-wide
- * shortcut (⇧⌘2 unless {@code -Dscreen.hotkey} says otherwise, registered through {@link GlobalHotkey})
- * starts it without switching to this window, and the app the key was pressed in stays in front.
+ * shortcut (⇧⌘2 unless the Speech menu or {@code -Dscreen.hotkey} says otherwise, registered through
+ * {@link GlobalHotkey}) starts it without switching to this window, and the app the key was pressed
+ * in stays in front. The menu's choice is remembered in the user's preferences.
  * Pause holds playback where it is, even mid-sentence, and the same button, now reading Resume,
  * continues from there; Stop ends it. The speed box changes the reading speed at once without
  * changing the pitch. Save WAV runs the same synthesis but writes the speech to a file instead of
@@ -36,6 +41,7 @@ public class ScreenSpeaker extends JFrame {
     private static final String HINT = "Press Copy Screen and drag over some text, then press Speak to hear it.";
     /** The hint once the system-wide shortcut is live, with its label in place of {@code %s}. */
     private static final String HINT_WITH_HOTKEY = "Press Copy Screen (or %s in any app) and drag over some text, then press Speak to hear it.";
+    private static final String COPY_SCREEN_TIP = "Take a screenshot of a region or window and add its text to the end of the pane";
     private static final String[] SPEEDS = {"0.75x", "1x", "1.25x", "1.5x", "1.75x", "2x", "2.5x", "3x"};
     static final String ENGLISH = "English";
     static final String CHINESE = "Chinese";
@@ -46,6 +52,15 @@ public class ScreenSpeaker extends JFrame {
     private final JComboBox<String> voice = new JComboBox<>(OllamaSpeech.DEFAULT_VOICES);
     private final JComboBox<String> speed = new JComboBox<>(SPEEDS);
     private final JButton copyScreenButton = new JButton("Copy Screen");
+    /** Speech > Copy Screen Shortcut: the presets, the key in force if it is not one of them, Other…, None. */
+    private final JMenu shortcutMenu = new JMenu("Copy Screen Shortcut");
+    private final Preferences prefs = Preferences.userRoot().node("dev/zhihua/screen-speaker");
+    /** Starts and stops the shortcut helper off the EDT, one change at a time. */
+    private final ExecutorService hotkeyWorker = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "hotkey");
+        t.setDaemon(true);
+        return t;
+    });
     private final JButton speakButton = new JButton("Speak");
     /** One action for the toolbar button and the menu item, so both flip between Pause and Resume. */
     private final Action pauseAction = new AbstractAction("Pause") {
@@ -72,8 +87,10 @@ public class ScreenSpeaker extends JFrame {
     private final Map<String, String> voiceByLanguage = new HashMap<>();
 
     private volatile SpeechPipeline pipeline;
-    /** The system-wide Copy Screen shortcut, once registered; null before that and when it failed. */
+    /** The system-wide Copy Screen shortcut, once registered; null before that, when it failed, and when it is off. */
     private volatile GlobalHotkey hotkey;
+    /** The shortcut spec in force, as the menu shows it (EDT only). */
+    private String hotkeySpec = "none";
     private volatile boolean capturing;
     private volatile boolean speaking;
     private volatile boolean saving;
@@ -132,7 +149,7 @@ public class ScreenSpeaker extends JFrame {
         updateButtons();
         setSize(560, 400);
         placeBottomRight();
-        startGlobalHotkey();
+        applyShortcut(GlobalHotkey.currentSpec(prefs), false);
     }
 
     /** Parks the window in the lower right corner so it covers as little of the screen as possible. */
@@ -168,6 +185,7 @@ public class ScreenSpeaker extends JFrame {
 
         JMenu speechMenu = new JMenu("Speech");
         speechMenu.add(item("Copy Screen", KeyEvent.VK_R, menuMask, e -> copyScreen()));
+        speechMenu.add(shortcutMenu);
         speechMenu.add(item("Speak Text", KeyEvent.VK_R, menuMask | KeyEvent.SHIFT_DOWN_MASK, e -> speak()));
         pauseAction.putValue(Action.ACCELERATOR_KEY, KeyStroke.getKeyStroke(KeyEvent.VK_P, menuMask));
         speechMenu.add(new JMenuItem(pauseAction));
@@ -206,7 +224,7 @@ public class ScreenSpeaker extends JFrame {
     private JToolBar buildActionBar() {
         JToolBar tb = new JToolBar();
         tb.setFloatable(false);
-        copyScreenButton.setToolTipText("Take a screenshot of a region or window and add its text to the end of the pane");
+        copyScreenButton.setToolTipText(COPY_SCREEN_TIP);
         copyScreenButton.addActionListener(e -> copyScreen());
         tb.add(copyScreenButton);
         speakButton.setToolTipText("Read the text below (or the selected part of it)");
@@ -298,34 +316,109 @@ public class ScreenSpeaker extends JFrame {
     // ---------------------------------------------------------------- system-wide shortcut
 
     /**
-     * Registers the system-wide Copy Screen shortcut in the background: the window works as before
-     * meanwhile, and without the shortcut if the key cannot be had. {@code -Dscreen.hotkey} names
-     * another key, or {@code none} for no shortcut.
+     * Puts {@code spec} in force: the previous helper is stopped and, unless the spec means none, a
+     * new one started, off the EDT and one change at a time. The menu, the tooltip and the status
+     * bar follow; {@code announce} says so in the status bar (a menu pick) rather than only
+     * updating the start-up hint.
      */
-    private void startGlobalHotkey() {
-        String spec = System.getProperty(GlobalHotkey.PROPERTY, GlobalHotkey.DEFAULT_SPEC).strip();
-        if (spec.isEmpty() || spec.equalsIgnoreCase("none") || spec.equalsIgnoreCase("off")) return;
-        GlobalHotkey.Key key;
-        try {
-            key = GlobalHotkey.parse(spec);
-        } catch (IllegalArgumentException e) {
-            setStatus("No system-wide shortcut: " + e.getMessage());
-            return;
-        }
-        CompletableFuture.runAsync(() -> {
+    private void applyShortcut(String spec, boolean announce) {
+        hotkeySpec = spec;
+        showShortcutMenu();
+        GlobalHotkey.Key key = null;
+        if (!GlobalHotkey.isOff(spec)) {
             try {
-                hotkey = GlobalHotkey.start(GlobalHotkey.locate(), key,
-                        () -> SwingUtilities.invokeLater(this::copyScreen),
-                        reason -> setStatus("The " + key.label() + " shortcut stopped working: " + reason));
-            } catch (IOException e) {
-                setStatus("No system-wide shortcut (" + key.label() + "): " + e.getMessage());
+                key = GlobalHotkey.parse(spec);
+            } catch (IllegalArgumentException e) {
+                setStatus("No system-wide shortcut: " + e.getMessage());
+            }
+        }
+        GlobalHotkey.Key chosen = key;
+        hotkeyWorker.execute(() -> {
+            GlobalHotkey old = hotkey;
+            hotkey = null;
+            if (old != null) old.close();
+            if (chosen == null) {
+                SwingUtilities.invokeLater(() -> showShortcut(null, announce));
                 return;
             }
-            SwingUtilities.invokeLater(() -> {
-                copyScreenButton.setToolTipText(copyScreenButton.getToolTipText() + ". " + key.label() + " does the same from any app");
-                if (HINT.equals(status.getText())) status.setText(String.format(HINT_WITH_HOTKEY, key.label()));
-            });
+            try {
+                hotkey = GlobalHotkey.start(GlobalHotkey.locate(), chosen,
+                        () -> SwingUtilities.invokeLater(this::copyScreen),
+                        reason -> setStatus("The " + chosen.label() + " shortcut stopped working: " + reason));
+            } catch (IOException e) {
+                setStatus("No system-wide shortcut (" + chosen.label() + "): " + e.getMessage());
+                SwingUtilities.invokeLater(() -> showShortcut(null, false));
+                return;
+            }
+            SwingUtilities.invokeLater(() -> showShortcut(chosen.label(), announce));
         });
+    }
+
+    /** Tooltip and status for the shortcut in force; {@code label} is null when there is none. */
+    private void showShortcut(String label, boolean announce) {
+        copyScreenButton.setToolTipText(label == null ? COPY_SCREEN_TIP : COPY_SCREEN_TIP + ". " + label + " does the same from any app");
+        if (announce) {
+            status.setText(label == null ? "Copy Screen has no system-wide shortcut now."
+                    : "Copy Screen shortcut is now " + label + "; it works in any app.");
+        } else if (status.getText().startsWith("Press Copy Screen")) { // still the start-up hint
+            status.setText(label == null ? HINT : String.format(HINT_WITH_HOTKEY, label));
+        }
+    }
+
+    /** Rebuilds the shortcut submenu around {@link #hotkeySpec}. */
+    private void showShortcutMenu() {
+        shortcutMenu.removeAll();
+        ButtonGroup group = new ButtonGroup();
+        boolean off = GlobalHotkey.isOff(hotkeySpec);
+        List<String> choices = new ArrayList<>(GlobalHotkey.PRESETS);
+        if (!off && !choices.contains(hotkeySpec)) choices.add(hotkeySpec);
+        for (String choice : choices) {
+            String label;
+            try {
+                label = GlobalHotkey.parse(choice).label();
+            } catch (IllegalArgumentException e) {
+                label = choice; // unparseable, from -Dscreen.hotkey: shown as typed, the status bar has the complaint
+            }
+            if (choice.equals(GlobalHotkey.DEFAULT_SPEC)) label += " (default)";
+            JRadioButtonMenuItem mi = new JRadioButtonMenuItem(label, choice.equals(hotkeySpec));
+            mi.addActionListener(e -> chooseShortcut(choice));
+            group.add(mi);
+            shortcutMenu.add(mi);
+        }
+        shortcutMenu.addSeparator();
+        JMenuItem other = new JMenuItem("Other…");
+        other.addActionListener(e -> askForShortcut());
+        shortcutMenu.add(other);
+        JRadioButtonMenuItem none = new JRadioButtonMenuItem("None", off);
+        none.addActionListener(e -> chooseShortcut("none"));
+        group.add(none);
+        shortcutMenu.add(none);
+    }
+
+    /** A menu pick: remembered for next time and applied now. */
+    private void chooseShortcut(String spec) {
+        GlobalHotkey.remember(prefs, spec);
+        applyShortcut(spec, true);
+    }
+
+    /** Other…: any combination the -Dscreen.hotkey flag would accept, checked before it is applied. */
+    private void askForShortcut() {
+        String suggestion = GlobalHotkey.isOff(hotkeySpec) ? GlobalHotkey.DEFAULT_SPEC : hotkeySpec;
+        Object answer = JOptionPane.showInputDialog(this,
+                "Keys for Copy Screen in any app, for example alt+cmd+r or ⌃⌥⌘R.\n"
+                        + "Modifiers: cmd, shift, alt, ctrl. Key: a letter, a digit, space, or f1 to f12.",
+                "Copy Screen Shortcut", JOptionPane.PLAIN_MESSAGE, null, null, suggestion);
+        if (answer == null) return; // cancelled
+        String spec = String.valueOf(answer).strip();
+        if (!GlobalHotkey.isOff(spec)) {
+            try {
+                GlobalHotkey.parse(spec);
+            } catch (IllegalArgumentException e) {
+                error("That is not a shortcut Screen Speaker can use:\n" + e.getMessage());
+                return;
+            }
+        }
+        chooseShortcut(spec);
     }
 
     // ---------------------------------------------------------------- copy screen

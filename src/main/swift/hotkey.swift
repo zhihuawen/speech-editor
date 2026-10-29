@@ -33,6 +33,11 @@ guard args.count == 3, let keyCode = UInt32(args[1]), let modifiers = UInt32(arg
     fail("usage: hotkey <virtual-key-code> <carbon-modifier-bits>")
 }
 
+// AppKit first, so that the event queue the window server delivers the press to exists before the
+// key is registered and before "ready" is printed. Background-only: no Dock icon, never activated.
+let app = NSApplication.shared
+app.setActivationPolicy(.prohibited)
+
 var hotKey: EventHotKeyRef?
 let hotKeyID = EventHotKeyID(signature: 0x5350_5352 /* 'SPSR' */, id: 1)
 let registered = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKey)
@@ -56,6 +61,4 @@ DispatchQueue.global().async {
 }
 
 tell("ready")
-let app = NSApplication.shared
-app.setActivationPolicy(.prohibited)
 app.run()

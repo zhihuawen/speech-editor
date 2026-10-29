@@ -4,10 +4,12 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.prefs.Preferences;
 
 /**
  * A system-wide keyboard shortcut that triggers Copy Screen from any app. Java cannot register one
@@ -24,6 +26,10 @@ final class GlobalHotkey implements AutoCloseable {
     static final String PROPERTY = "screen.hotkey";
     /** Next to the macOS screenshot keys ⇧⌘3, ⇧⌘4 and ⇧⌘5, and unused by macOS itself. */
     static final String DEFAULT_SPEC = "shift+cmd+2";
+    /** The keys the Speech menu offers; the first is the default. */
+    static final List<String> PRESETS = List.of(DEFAULT_SPEC, "alt+cmd+r", "ctrl+alt+cmd+r", "ctrl+alt+space");
+    /** Preferences key under which the menu choice is remembered. */
+    static final String PREF_KEY = "hotkey";
 
     /** A key as Carbon wants it: virtual key code and modifier bits, plus a label such as ⇧⌘2. */
     record Key(int keyCode, int modifiers, String label) {
@@ -48,6 +54,26 @@ final class GlobalHotkey implements AutoCloseable {
 
     private GlobalHotkey(Process process) {
         this.process = process;
+    }
+
+    // ---------------------------------------------------------------- the user's choice
+
+    /** True for the specs that mean "no shortcut": {@code none}, {@code off} or nothing at all. */
+    static boolean isOff(String spec) {
+        String s = spec.strip();
+        return s.isEmpty() || s.equalsIgnoreCase("none") || s.equalsIgnoreCase("off");
+    }
+
+    /** The spec in force: {@code -Dscreen.hotkey} if set, else the choice remembered in {@code prefs}, else the default. */
+    static String currentSpec(Preferences prefs) {
+        String property = System.getProperty(PROPERTY);
+        if (property != null && !property.isBlank()) return property.strip();
+        return prefs.get(PREF_KEY, DEFAULT_SPEC);
+    }
+
+    /** Remembers {@code spec} in {@code prefs} as the choice for the next start. */
+    static void remember(Preferences prefs, String spec) {
+        prefs.put(PREF_KEY, spec);
     }
 
     // ---------------------------------------------------------------- key specs
