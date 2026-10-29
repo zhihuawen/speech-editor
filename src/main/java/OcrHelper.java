@@ -14,7 +14,8 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Finds the native text-recognition helper (a small Swift program built by Gradle from
- * src/main/swift/ocr.swift and bundled into the jar) and runs it on screenshots.
+ * src/main/swift/ocr.swift and bundled into the jar) and runs it on screenshots. The unpacking
+ * also serves the other bundled helper, {@link GlobalHotkey}.
  */
 final class OcrHelper {
 
@@ -24,9 +25,14 @@ final class OcrHelper {
     private OcrHelper() {
     }
 
+    /** Where the bundled helpers are unpacked to. */
+    static Path cacheDir() {
+        return Path.of(System.getProperty("user.home"), "Library", "Caches", "dev.zhihua.speech-editor");
+    }
+
     /** The helper named by -Dscreen.ocr, else the bundled copy unpacked into the user's cache. */
     static Path locate() throws IOException {
-        return locate(Path.of(System.getProperty("user.home"), "Library", "Caches", "dev.zhihua.speech-editor"));
+        return locate(cacheDir());
     }
 
     static Path locate(Path cacheDir) throws IOException {
@@ -36,26 +42,35 @@ final class OcrHelper {
             if (Files.isExecutable(p)) return p;
             throw new IOException("screen.ocr points to " + configured + ", which is not an executable file");
         }
-        try (InputStream in = OcrHelper.class.getResourceAsStream(RESOURCE)) {
+        return unpack(RESOURCE, cacheDir);
+    }
+
+    /** Unpacks the helper binary bundled at classpath location {@code resource} into {@code cacheDir}. */
+    static Path unpack(String resource, Path cacheDir) throws IOException {
+        try (InputStream in = OcrHelper.class.getResourceAsStream(resource)) {
             if (in == null) {
-                throw new IOException("The text recognition helper is not bundled in this build. Build on macOS "
-                        + "with the Xcode Command Line Tools installed, or set -Dscreen.ocr=<path to helper>.");
+                throw new IOException("The helper " + resource + " is not bundled in this build. Build on macOS "
+                        + "with the Xcode Command Line Tools installed.");
             }
-            return extract(in.readAllBytes(), cacheDir);
+            return extract(resource.substring(resource.lastIndexOf('/') + 1), in.readAllBytes(), cacheDir);
         }
     }
 
-    /**
-     * Unpacks {@code binary} into {@code cacheDir} as an executable file named after its hash and
-     * returns the path. An existing copy with the same hash is reused untouched.
-     */
     static Path extract(byte[] binary, Path cacheDir) throws IOException {
-        Path target = cacheDir.resolve("ocr-" + sha256Prefix(binary));
+        return extract("ocr", binary, cacheDir);
+    }
+
+    /**
+     * Unpacks {@code binary} into {@code cacheDir} as an executable file named {@code name-<hash>}
+     * and returns the path. An existing copy with the same hash is reused untouched.
+     */
+    static Path extract(String name, byte[] binary, Path cacheDir) throws IOException {
+        Path target = cacheDir.resolve(name + "-" + sha256Prefix(binary));
         if (Files.isRegularFile(target) && Files.size(target) == binary.length && Files.isExecutable(target)) {
             return target;
         }
         Files.createDirectories(cacheDir);
-        Path tmp = Files.createTempFile(cacheDir, "ocr-", ".tmp");
+        Path tmp = Files.createTempFile(cacheDir, name + "-", ".tmp");
         try {
             Files.write(tmp, binary);
             Files.setPosixFilePermissions(tmp, EnumSet.of(

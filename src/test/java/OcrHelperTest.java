@@ -76,4 +76,12 @@ class OcrHelperTest {
             if (before != null) System.setProperty("screen.ocr", before);
         }
     }
+
+    @Test
+    void extractNamesTheCopyAfterTheHelperItCameFrom(@TempDir Path cache) throws Exception {
+        Path helper = OcrHelper.extract("hotkey", new byte[]{1, 2}, cache);
+
+        assertTrue(helper.getFileName().toString().startsWith("hotkey-"), helper.toString());
+        assertTrue(Files.isExecutable(helper));
+    }
 }

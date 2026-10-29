@@ -21,31 +21,36 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-// ---------------------------------------------------------------- native OCR helper (macOS)
-// Screen Speaker recognizes text with Apple's Vision framework through a tiny Swift program.
-// Gradle compiles it with swiftc (Xcode Command Line Tools) and bundles it into the jar as /bin/ocr.
+// ---------------------------------------------------------------- native helpers (macOS)
+// Screen Speaker recognizes text with Apple's Vision framework and registers its system-wide shortcut
+// with Carbon, each through a tiny Swift program. Gradle compiles them with swiftc (Xcode Command Line
+// Tools) and bundles them into the jar as /bin/ocr and /bin/hotkey.
 val isMac = System.getProperty("os.name").lowercase().contains("mac")
-val ocrHelperDir = layout.buildDirectory.dir("helpers")
-val ocrHelperBinary = ocrHelperDir.map { it.file("bin/ocr") }
+val helpersDir = layout.buildDirectory.dir("helpers")
 
-val compileOcr by tasks.registering(Exec::class) {
+fun swiftHelper(name: String) = tasks.register<Exec>("compile" + name.replaceFirstChar { it.uppercase() }) {
     group = "build"
-    description = "Compiles the Vision OCR helper with swiftc (macOS only)."
-    val source = layout.projectDirectory.file("src/main/swift/ocr.swift")
+    description = "Compiles the $name helper from src/main/swift/$name.swift with swiftc (macOS only)."
+    val source = layout.projectDirectory.file("src/main/swift/$name.swift")
+    val binary = helpersDir.map { it.file("bin/$name") }
     inputs.file(source)
-    outputs.file(ocrHelperBinary)
-    onlyIf("the Vision framework exists only on macOS") { isMac }
-    doFirst { ocrHelperBinary.get().asFile.parentFile.mkdirs() }
-    commandLine("swiftc", "-O", "-o", ocrHelperBinary.get().asFile.absolutePath, source.asFile.absolutePath)
+    outputs.file(binary)
+    onlyIf("the Apple frameworks exist only on macOS") { isMac }
+    doFirst { binary.get().asFile.parentFile.mkdirs() }
+    commandLine("swiftc", "-O", "-o", binary.get().asFile.absolutePath, source.asFile.absolutePath)
 }
+val nativeHelpers = listOf(swiftHelper("ocr"), swiftHelper("hotkey"))
 
-sourceSets.main { resources.srcDir(ocrHelperDir) }
-tasks.processResources { dependsOn(compileOcr) }
+sourceSets.main { resources.srcDir(helpersDir) }
+tasks.processResources { dependsOn(nativeHelpers) }
 
 tasks.test {
     useJUnitPlatform()
-    dependsOn(compileOcr)
-    if (isMac) systemProperty("ocr.helper", ocrHelperBinary.get().asFile.absolutePath)
+    dependsOn(nativeHelpers)
+    if (isMac) {
+        systemProperty("ocr.helper", helpersDir.get().file("bin/ocr").asFile.absolutePath)
+        systemProperty("hotkey.helper", helpersDir.get().file("bin/hotkey").asFile.absolutePath)
+    }
     systemProperty("java.awt.headless", "true") // tests draw images and play sound, never open windows
     testLogging { events("passed", "failed", "skipped"); exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
 }

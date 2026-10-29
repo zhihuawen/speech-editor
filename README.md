@@ -5,7 +5,9 @@ macOS `say` command.
 
 Copy Screen lets you drag over any part of the screen (a browser page, a PDF, another app's
 window), recognizes the text in the screenshot with Apple's Vision framework and adds it to the end
-of the text pane. The pane is a normal editor: paste or type text, fix misread words, select a part.
+of the text pane. The same capture is one key away in any app: ⇧⌘2 (next to the macOS screenshot
+keys) brings up the crosshair and appends the recognized text without taking you away from what you
+were reading. The pane is a normal editor: paste or type text, fix misread words, select a part.
 Speak reads the selection, or the whole pane when nothing is selected, in sentence-sized chunks so
 audio starts after the first chunk instead of after the whole text. Save WAV runs the same
 synthesis but writes the speech to a file instead of playing it.
@@ -17,9 +19,10 @@ synthesis but writes the speech to a file instead of playing it.
   to install it with `curl -fsSL https://ollama.com/install.sh | sh`. The `phonon` model is pulled
   on first use.
 - For Chinese, nothing extra: `say` and its Mandarin voice Tingting come with macOS.
-- macOS with the Xcode Command Line Tools (`xcode-select --install`). The build compiles a tiny
-  Swift helper (`src/main/swift/ocr.swift`) with `swiftc` and bundles it into the jar. On other
-  platforms the build still produces the jar, but Copy Screen reports that the helper is missing.
+- macOS with the Xcode Command Line Tools (`xcode-select --install`). The build compiles two tiny
+  Swift helpers (`src/main/swift/ocr.swift` for text recognition, `hotkey.swift` for the system-wide
+  shortcut) with `swiftc` and bundles them into the jar. On other platforms the build still produces
+  the jar, but Copy Screen reports that the helper is missing and there is no shortcut.
 
 ## Build
 
@@ -37,7 +40,9 @@ java -jar build/libs/screen-speaker.jar
 
 Or double-click `Screen Speaker.app`. The app finds `ollama` via `OLLAMA_BIN`, then `PATH`, then
 `/usr/local/bin`, `/opt/homebrew/bin` and `/Applications/Ollama.app`. Set `-Dspeech.model=<name>`
-to use a model other than `phonon`.
+to use a model other than `phonon`. Set `-Dscreen.hotkey=<keys>` to put the system-wide shortcut on
+another key (`alt+cmd+r`, `ctrl+f5`, `⌃⌥⌘R`: a letter, digit, `space` or `f1`..`f12` with any of
+`cmd`, `shift`, `alt`, `ctrl`), or `-Dscreen.hotkey=none` for no shortcut.
 
 ## Using it
 
@@ -48,6 +53,7 @@ voice and speed; the row below it holds the actions.
 |---|---|
 | Language | English or Chinese. English is read by ollama `phonon`, Chinese by the macOS `say` command. The voice list changes with the language, and each language remembers the voice you last picked |
 | Copy Screen | Press Copy Screen (Cmd-R). The window hides and the crosshair appears. Drag a rectangle over the text, or press Space and click a window. Esc cancels. The recognized text is added to the end of the pane as a new paragraph. Nothing is spoken yet, and playback that is already running keeps going |
+| ⇧⌘2 anywhere | Press Shift-Cmd-2 in any app, without switching to Screen Speaker: the same capture starts, and the text lands at the end of the pane while the app you were in stays in front, so several captures can be collected while reading. The key is registered when Screen Speaker starts; if that fails (another app owns the key, or the helper is missing) the status bar says so and Copy Screen still works from the window |
 | Speak | Pick a voice and press Speak (Shift-Cmd-R). Reads the selected part of the pane, or all of it when nothing is selected. Fix a misread word in the pane and press Speak to hear it corrected |
 | Speed | Pick 0.75x to 3x next to the voice. A change applies at once, even in the middle of a sentence, and the pitch stays the same: the audio is time-stretched, not played faster |
 | Pause / Resume | Pause (Cmd-P) holds playback where it is, even in the middle of a sentence. The same button, now labelled Resume, continues from that point |
@@ -107,6 +113,15 @@ order with blank lines where a vertical gap looks like a paragraph break. The he
 from the jar into `~/Library/Caches/dev.zhihua.speech-editor/` on first use; set
 `-Dscreen.ocr=<path>` to use a different binary.
 
+The system-wide shortcut comes from a second bundled Swift helper, `hotkey`, because Java cannot
+register one itself. It calls Carbon's `RegisterEventHotKey`, which works from any process and needs
+no Accessibility permission, prints `ready`, then `pressed` for every hit wherever it happens, and
+exits when its stdin closes, so it dies with the app. `GlobalHotkey` runs it and turns each `pressed`
+line into a Copy Screen. A capture started that way puts the window back without taking the
+keyboard: shown with auto-request-focus off, a Java window on macOS comes back without becoming the
+key window, so the app the key was pressed in stays in front; from the button or the menu the window
+takes the focus back as before.
+
 When `ollama` is not found, an English Speak shows a confirmation dialog, runs the install script
 with `/bin/sh -c`, streams its output to the status bar, and then looks for the binary again. A
 failed install shows the script's last lines and points to https://ollama.com/download.
@@ -118,4 +133,6 @@ prefetch, pause and resume, stop, failure, status wording), the Copy Screen appe
 stretch (length, pitch and loudness of a sine), pause, resume and speed changes on a real clip
 through the sound system (a few seconds of silence), `say` (a real Chinese WAV, the uninstalled
 voice error, the voice listing), the WAV file (concatenation, speed, format checks, file names),
-and the OCR helper (unpacking, plus recognition of text drawn with Java2D on macOS).
+the OCR helper (unpacking, plus recognition of text drawn with Java2D on macOS), and the system-wide
+shortcut (key specs, the helper protocol driven by fake helpers, and the real helper registering a
+key and exiting when its stdin closes).

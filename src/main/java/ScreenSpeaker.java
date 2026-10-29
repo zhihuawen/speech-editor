@@ -3,6 +3,7 @@ import javax.swing.text.DefaultEditorKit;
 import java.awt.*;
 import java.awt.event.ItemEvent;
 import java.awt.event.KeyEvent;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -19,10 +20,13 @@ import java.util.concurrent.CompletableFuture;
  * end of the text pane as a new paragraph. Nothing is spoken until the user presses Speak, which
  * reads the pane (or the selection in it): English with {@link OllamaSpeech}, Chinese with the
  * macOS say command through {@link SaySpeech}, as chosen in the Language box. Several captures can
- * be collected and then read in one go. Pause holds playback where it is, even mid-sentence, and
- * the same button, now reading Resume, continues from there; Stop ends it. The speed box changes
- * the reading speed at once without changing the pitch. Save WAV runs the same synthesis but
- * writes the speech to a file instead of playing it.
+ * be collected and then read in one go. The same capture is one key away in any app: the system-wide
+ * shortcut (⇧⌘2 unless {@code -Dscreen.hotkey} says otherwise, registered through {@link GlobalHotkey})
+ * starts it without switching to this window, and the app the key was pressed in stays in front.
+ * Pause holds playback where it is, even mid-sentence, and the same button, now reading Resume,
+ * continues from there; Stop ends it. The speed box changes the reading speed at once without
+ * changing the pitch. Save WAV runs the same synthesis but writes the speech to a file instead of
+ * playing it.
  *
  * macOS only: needs {@code screencapture}, {@code say} and the bundled Vision helper. Run with
  * {@code ./gradlew run} or {@code java -jar build/libs/screen-speaker.jar}.
@@ -30,6 +34,8 @@ import java.util.concurrent.CompletableFuture;
 public class ScreenSpeaker extends JFrame {
 
     private static final String HINT = "Press Copy Screen and drag over some text, then press Speak to hear it.";
+    /** The hint once the system-wide shortcut is live, with its label in place of {@code %s}. */
+    private static final String HINT_WITH_HOTKEY = "Press Copy Screen (or %s in any app) and drag over some text, then press Speak to hear it.";
     private static final String[] SPEEDS = {"0.75x", "1x", "1.25x", "1.5x", "1.75x", "2x", "2.5x", "3x"};
     static final String ENGLISH = "English";
     static final String CHINESE = "Chinese";
@@ -66,6 +72,8 @@ public class ScreenSpeaker extends JFrame {
     private final Map<String, String> voiceByLanguage = new HashMap<>();
 
     private volatile SpeechPipeline pipeline;
+    /** The system-wide Copy Screen shortcut, once registered; null before that and when it failed. */
+    private volatile GlobalHotkey hotkey;
     private volatile boolean capturing;
     private volatile boolean speaking;
     private volatile boolean saving;
@@ -124,6 +132,7 @@ public class ScreenSpeaker extends JFrame {
         updateButtons();
         setSize(560, 400);
         placeBottomRight();
+        startGlobalHotkey();
     }
 
     /** Parks the window in the lower right corner so it covers as little of the screen as possible. */
@@ -280,16 +289,55 @@ public class ScreenSpeaker extends JFrame {
 
     private void quit() {
         stopSpeech();
+        GlobalHotkey h = hotkey;
+        if (h != null) h.close();
         dispose();
         System.exit(0);
     }
 
+    // ---------------------------------------------------------------- system-wide shortcut
+
+    /**
+     * Registers the system-wide Copy Screen shortcut in the background: the window works as before
+     * meanwhile, and without the shortcut if the key cannot be had. {@code -Dscreen.hotkey} names
+     * another key, or {@code none} for no shortcut.
+     */
+    private void startGlobalHotkey() {
+        String spec = System.getProperty(GlobalHotkey.PROPERTY, GlobalHotkey.DEFAULT_SPEC).strip();
+        if (spec.isEmpty() || spec.equalsIgnoreCase("none") || spec.equalsIgnoreCase("off")) return;
+        GlobalHotkey.Key key;
+        try {
+            key = GlobalHotkey.parse(spec);
+        } catch (IllegalArgumentException e) {
+            setStatus("No system-wide shortcut: " + e.getMessage());
+            return;
+        }
+        CompletableFuture.runAsync(() -> {
+            try {
+                hotkey = GlobalHotkey.start(GlobalHotkey.locate(), key,
+                        () -> SwingUtilities.invokeLater(this::copyScreen),
+                        reason -> setStatus("The " + key.label() + " shortcut stopped working: " + reason));
+            } catch (IOException e) {
+                setStatus("No system-wide shortcut (" + key.label() + "): " + e.getMessage());
+                return;
+            }
+            SwingUtilities.invokeLater(() -> {
+                copyScreenButton.setToolTipText(copyScreenButton.getToolTipText() + ". " + key.label() + " does the same from any app");
+                if (HINT.equals(status.getText())) status.setText(String.format(HINT_WITH_HOTKEY, key.label()));
+            });
+        });
+    }
+
     // ---------------------------------------------------------------- copy screen
 
-    /** Screenshots a region, recognizes its text and appends it to the pane. Playback keeps going. */
+    /**
+     * Screenshots a region, recognizes its text and appends it to the pane. Playback keeps going.
+     * Started by the system-wide shortcut from another app, it leaves that app in front afterwards.
+     */
     private void copyScreen() {
         if (capturing) return;
         capturing = true;
+        boolean wasActive = isActive(); // false when the shortcut was pressed in another app
         updateButtons();
         setStatus("Drag over the text to copy. Space picks a whole window, Esc cancels.");
         setVisible(false); // get out of the way of the screenshot
@@ -309,8 +357,7 @@ public class ScreenSpeaker extends JFrame {
             @Override
             protected void done() {
                 capturing = false;
-                setVisible(true);
-                toFront();
+                reappear(wasActive);
                 updateButtons();
                 try {
                     String recognized = get();
@@ -335,6 +382,18 @@ public class ScreenSpeaker extends JFrame {
                 }
             }
         }.execute();
+    }
+
+    /**
+     * Shows the window again after a capture. It takes the keyboard back only if it had it before:
+     * shown with auto-request-focus off, a window on macOS comes back without becoming the key
+     * window, so the app the shortcut was pressed in keeps the focus.
+     */
+    private void reappear(boolean takeFocus) {
+        setAutoRequestFocus(takeFocus);
+        setVisible(true);
+        setAutoRequestFocus(true);
+        if (takeFocus) toFront();
     }
 
     /**
