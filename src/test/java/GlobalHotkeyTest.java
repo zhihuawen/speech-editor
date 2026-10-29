@@ -180,6 +180,32 @@ class GlobalHotkeyTest {
         assertEquals(List.of(), failures);
     }
 
+    /**
+     * The one test that presses the key: src/test/swift/press.swift posts the modifier keys and the
+     * key at the HID level, which needs Accessibility trust for the terminal running the tests, and
+     * the helper must report the press. Three modifiers keep the test key out of everyone's way.
+     */
+    @Test
+    void aPressOfTheRegisteredKeyReachesTheListener() throws Exception {
+        Path helper = bundledHelper();
+        Path press = Path.of("src/test/swift/press.swift").toAbsolutePath();
+        assumeTrue(Files.isRegularFile(press), "run from the project directory");
+        GlobalHotkey.Key key = GlobalHotkey.parse("ctrl+alt+cmd+h");
+        CountDownLatch pressed = new CountDownLatch(1);
+        List<String> failures = new ArrayList<>();
+
+        try (GlobalHotkey ignored = GlobalHotkey.start(helper, key, pressed::countDown, failures::add)) {
+            Process p = new ProcessBuilder("swift", press.toString(),
+                    String.valueOf(key.keyCode()), String.valueOf(key.modifiers())).redirectErrorStream(true).start();
+            String out = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).strip();
+            assertTrue(p.waitFor(2, TimeUnit.MINUTES), "swift should finish");
+            assumeTrue(p.exitValue() != 2, "posting key events needs Accessibility trust for the terminal running the tests");
+            assertEquals(0, p.exitValue(), out);
+
+            assertTrue(pressed.await(5, TimeUnit.SECONDS), "the helper should report the press; failures so far: " + failures);
+        }
+    }
+
     @Test
     void locateUnpacksTheBundledHelperIntoTheCache(@TempDir Path cache) throws Exception {
         assumeTrue(GlobalHotkey.class.getResource(GlobalHotkey.RESOURCE) != null, "bundled helper only exists on macOS builds");

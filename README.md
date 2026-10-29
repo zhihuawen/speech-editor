@@ -116,7 +116,9 @@ from the jar into `~/Library/Caches/dev.zhihua.speech-editor/` on first use; set
 The system-wide shortcut comes from a second bundled Swift helper, `hotkey`, because Java cannot
 register one itself. It calls Carbon's `RegisterEventHotKey`, which works from any process and needs
 no Accessibility permission, prints `ready`, then `pressed` for every hit wherever it happens, and
-exits when its stdin closes, so it dies with the app. `GlobalHotkey` runs it and turns each `pressed`
+exits when its stdin closes, so it dies with the app. The press only arrives through the
+application event loop (a bare `CFRunLoopRun()` registers fine and then never hears a thing), so
+the helper runs `NSApplication`'s loop as a background-only process. `GlobalHotkey` runs it and turns each `pressed`
 line into a Copy Screen. A capture started that way puts the window back without taking the
 keyboard: shown with auto-request-focus off, a Java window on macOS comes back without becoming the
 key window, so the app the key was pressed in stays in front; from the button or the menu the window
@@ -134,5 +136,7 @@ stretch (length, pitch and loudness of a sine), pause, resume and speed changes 
 through the sound system (a few seconds of silence), `say` (a real Chinese WAV, the uninstalled
 voice error, the voice listing), the WAV file (concatenation, speed, format checks, file names),
 the OCR helper (unpacking, plus recognition of text drawn with Java2D on macOS), and the system-wide
-shortcut (key specs, the helper protocol driven by fake helpers, and the real helper registering a
-key and exiting when its stdin closes).
+shortcut (key specs, the helper protocol driven by fake helpers, the real helper registering a key
+and exiting when its stdin closes, and one real press: `src/test/swift/press.swift` posts the
+modifier keys and the key at the HID level and the helper must report it; that test skips unless the
+terminal running the tests has Accessibility permission).

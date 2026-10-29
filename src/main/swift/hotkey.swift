@@ -9,7 +9,12 @@
 //
 // Built by Gradle (`swiftc -O -o build/helpers/bin/hotkey src/main/swift/hotkey.swift`) and bundled
 // in the jar as /bin/hotkey. Carbon's hot key API exists only on macOS.
+//
+// The press is delivered only through the application event loop: with a bare CFRunLoopRun() the
+// registration succeeds but the handler never runs, so this runs NSApplication's loop as a
+// background-only process (no Dock icon, never activated).
 
+import AppKit
 import Carbon
 import Foundation
 
@@ -51,4 +56,6 @@ DispatchQueue.global().async {
 }
 
 tell("ready")
-CFRunLoopRun()
+let app = NSApplication.shared
+app.setActivationPolicy(.prohibited)
+app.run()
